@@ -63,55 +63,111 @@ def parse_hex_dump(text: str) -> List[bytes]:
 
 
 def analyze_tcp_payload(payload: bytes) -> None:
-    """Analyze potential RV-C framing in TCP payload."""
+    """Analyze Lippert OneControl TCP payload."""
     print(f"\n{'='*60}")
     print(f"Payload: {len(payload)} bytes")
     print(f"Hex: {payload.hex()}")
     
-    # Look for patterns
-    offset = 0
-    messages = []
+    # Lippert message types
+    MSG_TYPES = {
+        0x40: "STATE/SHORT",
+        0x41: "NODE/REGISTER",
+        0x43: "MULTI/QUERY",
+        0x45: "STATUS/SET",
+        0x85: "BROADCAST",
+        0xC3: "CONFIG",
+        0xC5: "EXT_STATUS",
+    }
     
-    while offset < len(payload):
+    # Magic byte sequences
+    MAGIC_BYTES = {
+        (0x80, 0x84): "Standard",
+        (0x80, 0x86): "Alternate",
+        (0x83, 0xdc): "Legacy?",
+    }
+    
+    # Parse Lippert messages
+    offset = 0
+    msg_count = 0
+    
+    while offset < len(payload) - 2:
         remaining = payload[offset:]
         
-        # Pattern 1: 0x00 followed by length byte
-        if len(remaining) >= 2 and remaining[0] == 0x00:
-            length = remaining[1]
-            if length > 0 and len(remaining) >= length + 2:
-                msg = remaining[2:length + 2]
-                messages.append(('len_prefixed', offset, msg))
-                print(f"\n  [Offset {offset}] Length-prefixed message ({length} bytes):")
-                print(f"    Data: {msg.hex()}")
+        # Lippert messages start with 0x00
+        if remaining[0] == 0x00 and len(remaining) >= 6:
+            msg_type = remaining[1]
+            
+            if msg_type in MSG_TYPES:
+                msg_count += 1
+                type_name = MSG_TYPES[msg_type]
                 
-                # Try to interpret as CAN frame
-                if len(msg) >= 12:
-                    canid = int.from_bytes(msg[:4], 'big')
-                    dgn = (canid >> 8) & 0x1FFFF
-                    src = canid & 0xFF
-                    data = msg[4:12]
-                    print(f"    → CAN ID: 0x{canid:08X} (DGN=0x{dgn:05X}, src=0x{src:02X})")
-                    print(f"    → Data: {data.hex()}")
+                # Try to find message end (next 0x00 start or known pattern)
+                # Common message lengths: 8, 11, 12, 15, 19, 30, 53
                 
-                offset += length + 2
+                print(f"\n  [{msg_count}] Type 0x{msg_type:02X} ({type_name}) at offset {offset}")
+                
+                # Parse based on type
+                if msg_type == 0x45:
+                    # 0x45 format: 00 45 02 [magic] [inst] [cmd] [data] 00
+                    if len(remaining) >= 11:
+                        len_marker = remaining[2]
+                        magic = (remaining[3], remaining[4])
+                        instance = remaining[5]
+                        cmd = remaining[6]
+                        
+                        magic_name = MAGIC_BYTES.get(magic, "Unknown")
+                        print(f"       Magic: {magic[0]:02X} {magic[1]:02X} ({magic_name})")
+                        print(f"       Instance: 0x{instance:02X} ({instance})")
+                        print(f"       Command: 0x{cmd:02X} ({'STATUS' if cmd == 0x11 else 'SET' if cmd == 0x42 else 'OTHER'})")
+                        
+                        if cmd == 0x42 and len(remaining) >= 11:
+                            # Set command with value
+                            value = remaining[8] | (remaining[9] << 8)
+                            print(f"       Value: {value} (0x{value:04X})")
+                        
+                        # Find end
+                        for end_off in range(8, min(15, len(remaining))):
+                            if remaining[end_off] == 0x00:
+                                print(f"       Raw: {remaining[:end_off+1].hex()}")
+                                offset += end_off + 1
+                                break
+                        else:
+                            offset += 11
+                        continue
+                
+                elif msg_type == 0x43:
+                    # Multi-part: 00 43 01 06 [inst] 01 [val] 00
+                    if len(remaining) >= 8:
+                        sub = remaining[2]
+                        cmd = remaining[3]
+                        instance = remaining[4]
+                        
+                        print(f"       Sub: 0x{sub:02X}, Cmd: 0x{cmd:02X}")
+                        print(f"       Instance: 0x{instance:02X} ({instance})")
+                        
+                        if len(remaining) >= 8 and remaining[7] == 0x00:
+                            print(f"       Raw: {remaining[:8].hex()}")
+                            offset += 8
+                            continue
+                
+                elif msg_type == 0x41:
+                    # Registration: 00 41 08 41 [inst] ...
+                    if len(remaining) >= 16:
+                        instance = remaining[4]
+                        device_id = remaining[8:13]
+                        print(f"       Instance: 0x{instance:02X}")
+                        print(f"       Device ID: {device_id.hex()}")
+                        print(f"       Raw: {remaining[:16].hex()}")
+                        offset += 16
+                        continue
+                
+                # Default: show first 12 bytes
+                show_len = min(12, len(remaining))
+                print(f"       Raw: {remaining[:show_len].hex()}")
+                offset += show_len
                 continue
         
-        # Pattern 2: Type marker (0x40, 0x41, 0x43) followed by data
-        if remaining[0] in (0x40, 0x41, 0x43):
-            type_byte = remaining[0]
-            # Guess at message boundary - try common sizes
-            for size in [8, 12, 16]:
-                if len(remaining) >= size:
-                    msg = remaining[1:size]
-                    messages.append(('typed', offset, msg))
-                    print(f"\n  [Offset {offset}] Type 0x{type_byte:02X} message (~{size-1} bytes):")
-                    print(f"    Data: {msg.hex()}")
-                    break
-            offset += 1  # Move at least one byte
-            continue
-        
-        # Unknown - try to find next recognizable pattern
-        print(f"\n  [Offset {offset}] Unknown byte: 0x{remaining[0]:02X}")
+        # Not a recognized message start
         offset += 1
     
     # Byte frequency analysis

@@ -40,7 +40,7 @@ The OneControl system creates a WiFi access point:
 - **SSID**: `MyRV_<serial>`  (e.g., `MyRV_002630732020218F`)
 - **Password**: Found on the unit or in documentation
 - **Controller IP**: Typically `192.168.1.1`
-- **Protocol**: TCP on port `6969`
+- **Protocol**: TCP on port `6969` (heh)
 
 ### RV-C Protocol Basics
 
@@ -69,15 +69,96 @@ CAN ID (29 bits):
 
 See [`rvc/dgn.py`](rvc/dgn.py) for the complete list.
 
-### TCP Framing (Preliminary)
+### Lippert TCP Protocol (Port 6969)
 
-The TCP protocol wraps RV-C CAN frames in a custom format. Based on traffic analysis:
+The TCP protocol uses a **proprietary Lippert framing**, not raw RV-C CAN frames. Based on extensive traffic analysis:
+
+#### Message Structure
 
 ```
-[Length?][Type?][CAN ID (4 bytes)][CAN Data (8 bytes)]...
+[00] [Type] [Len?] [Magic] [Instance] [Cmd] [Data...] [00]
 ```
 
-> 🔬 **Protocol analysis in progress** - The exact framing format is still being determined.
+| Byte | Description |
+|------|-------------|
+| `00` | Start delimiter |
+| Type | Message type: `40`, `41`, `43`, `45`, `85`, `C3`, `C5` |
+| Len? | Length marker or sub-type (often `02`) |
+| Magic | Two magic bytes: `80 84`, `80 86`, or `83 dc` |
+| Instance | Device instance ID (1 byte) |
+| Cmd | Command byte (e.g., `11`=status, `42`=set) |
+| Data | Variable length payload |
+| `00` | End delimiter |
+
+#### Message Types (Observed)
+
+| Type | Direction | Description |
+|------|-----------|-------------|
+| `0x40` | Both | Device state / short status |
+| `0x41` | Both | Device registration / node info |
+| `0x43` | Both | Multi-part messages / queries |
+| `0x45` | Both | Status request (`11`) or Set value (`42`) |
+| `0x85` | Controller→App | Status broadcast |
+| `0xC3` | Controller→App | Configuration data |
+| `0xC5` | Controller→App | Extended status |
+
+#### Example Messages
+
+**Status Poll** (App → Controller):
+```
+00 45 02 80 84 04 11 02 2b 5d 00
+   │     │     │  │  │  └────── Checksum?
+   │     │     │  │  └───────── Status request
+   │     │     │  └──────────── Instance 0x04
+   │     │     └─────────────── Magic bytes
+   │     └───────────────────── Length marker
+   └─────────────────────────── Type 0x45
+```
+
+**Device Registration** (App → Controller):
+```
+00 41 08 41 21 08 1c 88 43 4f af 67 82 02 00 00
+         │        └──────────────────── Device ID
+         └─────────────────────────────── Instance 0x21
+```
+
+**Set Command** (Captured but not yet working):
+```
+00 45 02 80 84 28 42 02 04 c2 00
+               │  │  │  └────── Value (little-endian)
+               │  │  └───────── Data length
+               │  └──────────── Set command
+               └─────────────── Instance 0x28
+```
+
+#### Device Instances (Example RV)
+
+| Instance | Device |
+|----------|--------|
+| `0x04` | Unknown (polled frequently) |
+| `0x21` | Kitchen light |
+| `0x28` | Bed Ceiling light |
+| `0xEC` | Unknown (polled frequently) |
+| `0xF7` | App virtual device? |
+
+> ⚠️ **Control commands not yet working** - The protocol accepts our messages but doesn't actuate devices. Possible causes:
+> - Missing authentication/pairing step
+> - Session state requirement
+> - Incorrect command format
+> - Read-only TCP interface (control via CAN only)
+
+### Alternative: CAN Bus Direct Access
+
+If TCP control remains elusive, direct CAN bus access is possible:
+
+| Adapter | Price | Interface |
+|---------|-------|-----------|
+| CANable Pro | ~$40 | USB (slcan) |
+| Waveshare CAN HAT | ~$20 | Raspberry Pi SPI |
+| ESP32 + SN65HVD230 | ~$10 | Built-in CAN controller |
+| MCP2515 module | ~$5 | SPI (any microcontroller) |
+
+CAN bus uses **RV-C** protocol directly - see DGN definitions above.
 
 ## Installation
 
@@ -197,10 +278,41 @@ OneControl-RV-C-Protocol/
 ## Contributing
 
 Contributions welcome! Areas that need work:
-1. **TCP framing** - Document the exact byte format
-2. **More DGNs** - Add missing message types
-3. **Bidirectional control** - Sending commands
-4. **Home Assistant integration** - Native component
+
+### High Priority
+1. **🔓 Crack TCP control** - Figure out why commands don't actuate devices
+   - Try different init sequences
+   - Find authentication/pairing mechanism
+   - Test with Wireshark on actual phone
+2. **🔌 CAN bus implementation** - Direct RV-C control as backup
+
+### Medium Priority
+3. **📝 Protocol documentation** - Complete message type catalog
+4. **🏠 Home Assistant integration** - Native component (once control works)
+5. **📱 Reverse engineer iOS app** - Decompile LippertConnect for secrets
+
+### Research Needed
+- Does the Cloud Bridge use a different protocol?
+- Is there an MQTT or REST API hidden somewhere?
+- What role does the touch panel play in command routing?
+
+## Investigation Log
+
+### What Works ✅
+- WiFi connection to OneControl AP
+- TCP connection to port 6969
+- Receiving status broadcasts
+- Identifying device instances
+- Capturing app traffic
+
+### What Doesn't Work ❌
+- Sending control commands (lights don't respond)
+- Device registration appears to succeed but control fails
+
+### Theories
+1. **Missing session token** - App may establish encrypted session
+2. **Command routing** - Commands may route through touch panel via CAN
+3. **Protocol versioning** - Our commands may be for different firmware
 
 ## License
 
