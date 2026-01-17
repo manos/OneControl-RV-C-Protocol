@@ -349,20 +349,29 @@ Contributions welcome! Areas that need work:
 ### What Works ✅
 - WiFi connection to OneControl AP (`MyRV_*` network)
 - TCP connection to port 6969
-- Receiving continuous status broadcasts
-- Identifying device instances from traffic (Kitchen=`0x28`, etc.)
-- Capturing and analyzing app traffic via tcpdump
-- Distinguishing polling vs command messages
+- Receiving continuous status broadcasts (~400 frames in 3 seconds!)
 - Phone app works with Bluetooth OFF (confirms WiFi control)
-- **Registration packet exchange** - Controller responds to our registration
-- **CRC-8 calculation verified** - Polynomial 0x8C (reflected), init 0x55
-- **COBS decoding/encoding** - Correctly parse captured messages
+- **CRC-8 calculation verified** - Polynomial 0x8C (reflected), init 0x55 ✓
+- **COBS decoding/encoding** - Correctly parse captured messages ✓
+- **Protocol structure confirmed** - Matches decompiled app exactly ✓
+- **Device discovery** - Found 30+ devices broadcasting status
+
+### Broadcasting Devices Discovered (2025-01-17)
+```
+DimmableLight devices on Table 0x00:
+  0x04, 0x05, 0x0E, 0x10, 0x13, 0x15, 0x28 (Bed Ceiling), 0x2B, 0x2C, 
+  0x33, 0x36, 0x3E, 0x3F, 0x41, 0x48, 0x51, 0x6C, 0x73, 0x77, 0x86, 
+  0x98, 0xAE, 0xBA, 0xBF, 0xC4, 0xCF, 0xD3, 0xD4, 0xEC, 0xF2, 0xFB, 0xFF
+  
+Note: Kitchen light (0x6A) NOT found in broadcasts - may use different ID
+```
 
 ### What Doesn't Work ❌
 - **Any control command format we tried** - 100+ variations tested
-- Exact byte-for-byte replay of captured app commands (different session)
-- Commands with correct CRC but different session ID
-- Different device addresses (`fe64`, `0x28`, `7d28`, etc.)
+- Exact byte-for-byte replay of captured app commands
+- ActionSwitch with table 0x00 and device 0x28 (Bed Ceiling)
+- ActionDimmable with various brightness values
+- Different device table IDs (0x00, 0x02, 0x07)
 
 ### Key Findings
 
@@ -417,20 +426,27 @@ COBS-encoded over wire:
 ### Remaining Mysteries
 
 1. **Why don't our commands work?**
-   - We can register, we can calculate correct CRC
-   - But toggle commands with our session ID don't actuate devices
-   - Possible: Device address `fe64` is session/device specific
+   - COBS encoding is correct (verified by decoding captured packets)
+   - CRC-8 is correct (verified by comparing to captured packets)
+   - Command structure matches decompiled app
+   - But toggle commands don't actuate devices
+   - **Hypothesis**: Touch panel may be the only device authorized to send commands
 
-2. **Device address discovery**
-   - Captured toggle uses `fe 64` - what does this map to?
-   - Kitchen light is instance `0x28` but toggle doesn't use `28` directly
-   - Need to understand the `fe XX` address format
+2. **Device address mapping**
+   - Broadcasts show device IDs like `0x28`, `0x41`, `0x73`
+   - App toggle captured uses `fe 64` format
+   - How do these relate? `fe XX` might be CAN bus source address
+   - Kitchen light (0x6A) NOT found in broadcasts - might have different ID
 
-3. **Second session phenomenon**
-   - First connection (port 60477) gets session `32`
-   - App opens second connection (port 60480) gets session `30`
-   - Toggle commands go on second connection with `30`
-   - Maybe we need multiple connections?
+3. **Multi-connection model**
+   - App opens multiple TCP connections to controller
+   - Connection 1: Status polling
+   - Connection 2: Command sending
+   - Tested with dual connections - still no effect
+
+4. **Missing initialization?**
+   - App sends `GetDevices` and `GetDevicesMetadata` commands on connect
+   - Maybe we need to complete full device enumeration before control works
 
 ### Tested Command Formats (Expanded)
 

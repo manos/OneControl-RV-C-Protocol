@@ -239,6 +239,62 @@ crc8(bytes.fromhex("0807303030fe6486000100 00"), init=0x55) == 0xA5  # ✅ MATCH
 2. **Why doesn't our session work?** - We register OK, but toggle commands fail
 3. **Type 0xC7 variant** - Some toggles use `0xC7` instead of `0x47`
 
+## Live Protocol Analysis (2025-01-17)
+
+### GatewayInformation Format
+
+The actual GatewayInfo messages are only **4 bytes**, not 13 as expected from decompiled code:
+
+```
+[0x01][0x03][DeviceId?][???]
+
+Examples captured:
+  0103510a - Type 0x01, byte2=0x51, byte3=0x0a
+  01034800 - Type 0x01, byte2=0x48, byte3=0x00
+  01030400 - Type 0x01, byte2=0x04, byte3=0x00
+```
+
+**Protocol Version appears to be 0x03** (older/simpler format)
+
+### Devices Found Broadcasting
+
+32 dimmable light devices on Table 0x00:
+```
+0x04, 0x05, 0x0E, 0x10, 0x13, 0x15, 0x28, 0x2B, 0x2C, 0x33, 
+0x36, 0x3E, 0x3F, 0x41, 0x48, 0x51, 0x6C, 0x73, 0x77, 0x86, 
+0x98, 0xAE, 0xBA, 0xBF, 0xC4, 0xCF, 0xD3, 0xD4, 0xEC, 0xF2, 
+0xFB, 0xFF
+```
+
+**IMPORTANT**: Kitchen light (0x6A) NOT found in broadcasts!
+- Device 0x28 confirmed as Bed Ceiling (per user)
+- Kitchen light may have different device ID
+
+### Event Types Observed
+
+| Count | Type | Name |
+|-------|------|------|
+| 242 | 0x08 | DimmableLightStatus |
+| 115 | 0x04 | DeviceLockStatus |
+| 79 | 0x06 | RelayBasicLatchingStatus2 |
+| 44 | 0x01 | GatewayInfo |
+| 12 | 0x05 | RelayBasicLatchingStatus1 |
+
+### DimmableLightStatus Format (Type 0x08)
+
+```
+08 TT DD BB SS ?? ?? ?? ?? ?? ??
+│  │  │  │  │
+│  │  │  │  └── State (0x14, 0x13, 0x0F, etc.)
+│  │  │  └───── Brightness (usually 0x02 or 0x00)
+│  │  └──────── Device ID
+│  └─────────── Table ID (0x00, 0x02, 0x03, 0x07)
+└────────────── Event Type
+
+Example: 080028021400000008915d
+         = Table 0x00, Device 0x28, Brightness 2, State 0x14
+```
+
 ## Implementation Status
 
 - [x] COBS encoder/decoder implemented (`rvc/cobs.py`)
@@ -246,9 +302,11 @@ crc8(bytes.fromhex("0807303030fe6486000100 00"), init=0x55) == 0xA5  # ✅ MATCH
 - [x] Command builder (`rvc/commands.py`)
 - [x] CRC calculation verified against captured traffic
 - [x] Registration packet exchange working
+- [x] **COBS decoding verified** - Successfully decoding live traffic
+- [x] **Device discovery** - Found 32 devices broadcasting
 - [ ] **CONTROL NOT WORKING** - Commands accepted but devices don't respond
-- [ ] Device discovery (GetDevices command)
-- [ ] Event/status parsing
+- [ ] Identify Kitchen light device ID (0x6A not in broadcasts)
+- [ ] Understand why commands don't actuate devices
 
 ## Files Created
 
