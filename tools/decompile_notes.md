@@ -9,50 +9,32 @@ Reverse engineering notes for the LippertConnect Android app.
 - **Min SDK**: Android 9.0+
 - **Size**: ~145MB
 
-## Search Targets
+## Key Discovery: COBS Framing!
 
-### Network/Protocol Related
-- [ ] `6969` - TCP port
-- [ ] `192.168.1` - Controller IP
-- [ ] `socket` - Socket operations
-- [ ] `connect` - Connection logic
-- [ ] `write` / `send` - Data transmission
-- [ ] `read` / `receive` - Data reception
+**The TCP protocol uses COBS (Consistent Overhead Byte Stuffing) encoding!**
 
-### Protocol Constants
-- [ ] `0x45` or `\x45` - Message type
-- [ ] `0x43` or `\x43` - Message type
-- [ ] `0x41` or `\x41` - Message type
-- [ ] `83ac` or `0x83ac` - Magic bytes
-- [ ] `83ae` - Magic bytes
-- [ ] `80 84` - Magic bytes
+This explains the `0x00` delimiters we saw in tcpdump captures. COBS is a framing protocol that:
+- Uses `0x00` as frame delimiters
+- Encodes data to eliminate `0x00` bytes within the payload
+- Adds minimal overhead (1 byte per 254 bytes)
 
-### Control Logic
-- [ ] `toggle` - Toggle function
-- [ ] `light` - Light control
-- [ ] `dimmer` - Dimmer control
-- [ ] `command` - Command building
-- [ ] `onecontrol` - Product name
+### Protocol Stack
 
-### Authentication/Security
-- [ ] `encrypt` - Encryption
-- [ ] `decrypt` - Decryption
-- [ ] `sign` - Signing
-- [ ] `hash` - Hashing
-- [ ] `token` - Auth tokens
-- [ ] `session` - Session management
-- [ ] `checksum` - Checksums
-
-### Bluetooth (backup check)
-- [ ] `BluetoothGatt` - BLE GATT
-- [ ] `characteristic` - BLE characteristics
-- [ ] `uuid` - Service/characteristic UUIDs
+```
+[TCP/IP (port 6969)]
+    └── [COBS Framing (0x00 delimiters)]
+        └── [CRC Validation (CRC-8 or CRC-32)]
+            └── [MyRvLink Command/Event Messages]
+                └── [IDS CAN / RV-C Data]
+```
 
 ## Findings
 
 ### App Framework
 
 **This is a Xamarin/.NET MAUI app!** The Java code is just bindings - actual logic is in .NET assemblies.
+
+Successfully extracted **430 .NET assemblies** from `libassemblies.armeabi-v7a.blob.so` using LZ4 decompression.
 
 ### Package Structure
 
@@ -68,61 +50,80 @@ LippertConnect.apk (split APK bundle)
 └── config.mdpi.apk                  # Medium DPI resources
 ```
 
-### Key .NET DLLs Found (in blob)
+### Key .NET DLLs Found
 
-| DLL | Purpose |
-|-----|---------|
-| `OneControl.Direct.MyRvLinkTcpIp.dll` | **TCP Protocol Implementation!** |
-| `OneControl.Direct.IdsCan.dll` | CAN bus protocol |
-| `OneControl.Direct.MyRvLink.dll` | General MyRV Link |
-| `OneControl.Direct.MyRvLinkBle.dll` | Bluetooth LE protocol |
-| `OneControl.Direct.IdsCanAccessoryBle.dll` | BLE accessories |
-| `OneControl.Devices.dll` | Device definitions |
-| `OneControl.dll` | Core library |
-| `IDS.Portable.CAN.dll` | Portable CAN implementation |
-| `DotNetty.Transport.dll` | Network transport |
+| Extracted DLL | Original Name | Purpose |
+|---------------|---------------|---------|
+| `d.dll` | `OneControl.Direct.MyRvLinkTcpIp.dll` | **TCP Protocol Implementation!** |
+| `TcpIp.dll` | `OneControl.Direct.RvCloudIoT` | Cloud IoT direct commands |
+| `assembly_0168_P.dll` | MyRvLink events/commands | Event definitions |
+| `assembly_0169_P.dll` | MyRvLink COBS | COBS stream handling |
+| `assembly_0087_IDS.Net.dll` | `IDS.Portable.Common` | COBS base, CRC |
+| `assembly_0085_IDS.Net.dll` | IDS CAN connection | TCP/WiFi/BLE connections |
+| `Gateway.dll` | Device gateway | Logical device handling |
 
 ### Key Methods Found
 
-| Method | DLL | Purpose |
-|--------|-----|---------|
-| `SendCommandRaw` | Unknown | Send raw commands |
-| `SetBrightness` | Unknown | Dimmer control |
-| `WriteBytes` | Unknown | Low-level write |
-| `IsLight` | Unknown | Light detection |
-| `CommandMapp` | Unknown | Command mapping |
+| Method | Location | Purpose |
+|--------|----------|---------|
+| `SendCommandRawAsync` | d.dll | **Send raw TCP commands** |
+| `WriteDataAsync` | d.dll | Write to TCP stream |
+| `ConnectAsync` | d.dll | TCP connection |
+| `SendDirectCommandLightDimmable` | assembly_0168 | Dimmer control |
+| `SendDirectCommandRelayBasicSwitch` | assembly_0168 | Switch control |
+| `SendDirectCommandLightRgb` | assembly_0168 | RGB light control |
+| `TryDecodeByte` | assembly_0087 | COBS decode |
+| `AppendValueByte` | assembly_0087 | COBS encode |
 
 ### Key Classes Found
 
-| Class | Purpose | Notes |
-|-------|---------|-------|
-| `TcpClient` | TCP communication | Standard .NET |
-| `DeviceModel` | Device representation | |
-| `ForInvalidCommand` | Error handling | |
+| Class | DLL | Purpose |
+|-------|-----|---------|
+| `DirectConnectionMyRvLinkTcpIp` | d.dll | Main TCP connection handler |
+| `CobsEncoder` | d.dll | COBS encoding |
+| `CobsDecoder` | d.dll | COBS decoding |
+| `CobsStream` | assembly_0087/d.dll | COBS stream wrapper |
+| `Crc32`, `Crc8` | assembly_0087 | CRC validation |
+| `MyRvLinkEventDevicesSubByte` | assembly_0168 | Sub-byte event parsing |
+| `MyRvLinkRelayBasicLatchingStatusType1` | assembly_0168 | Relay status |
 
-### Command Building Logic
+### COBS Framing Details
 
-```java
-// Paste relevant code snippets here
-```
+From `assembly_0087_IDS.Net.dll`:
+- `FrameByteCountLsb` - Frame has length byte (LSB)
+- `PrependStartFrame` - Frames may have start marker
+- `DefaultFrameByte` - Default frame delimiter byte
+- `MaxCobsSourceBufferSize` - Max buffer size
 
-### Magic Byte Sources
+### CRC/Checksum Algorithm
 
-```java
-// Where are 83ac, 83ae, etc. defined?
-```
+From `assembly_0087_IDS.Net.dll`:
+- **CRC-32 LE** (Little Endian) - `Crc32Le`, `Crc32_le`
+- **CRC-8** - for shorter messages
+- `UseCrc` flag - CRC can be optional
+- `payloadCrc`, `computedCrc` - CRC validation
+- `CobsCrcMismatchException` - thrown on CRC error
 
-### Checksum Algorithm
+### Command Types (from assembly_0168)
 
-```java
-// How are the changing values (2bc2, 51, fd) computed?
-```
+| Command | Purpose |
+|---------|---------|
+| `LogicalDeviceLightDimmableCommand` | Dimmer control |
+| `LogicalDeviceLightRgbCommand` | RGB light |
+| `LogicalDeviceClimateZoneCommand` | HVAC zone |
+| `LogicalDeviceLevelerCommandType1` | Leveler |
+| `LogicalDeviceRelayBasicStatusType1` | Relay status |
+| `MyRvLinkRelayBasicLatchingStatusType1` | Latching relay |
+| `MyRvLinkRelayHBridgeMomentaryStatusType1` | H-bridge relay |
 
-### Authentication Flow
+### Protocol Constants
 
-```
-(Sequence diagram or description)
-```
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `DefaultPort` | 6969 | TCP port |
+| `ConnectionSendDataTimeMs` | ? | Send timeout |
+| `ConnectionReceiveDataTimeMs` | ? | Receive timeout |
+| `MaxCobsSourceBufferSize` | ? | Max message size |
 
 ## Native Libraries
 

@@ -1,210 +1,191 @@
 """
-Lippert OneControl command builders.
+OneControl command building.
 
-Based on reverse-engineering of LippertConnect iOS app traffic.
+Message format (discovered from LippertConnect decompilation):
 
-Command Format (observed):
-    [00] [type] [len] [83 dc] [instance] [cmd] [subcmd] [value...] [00]
+Frame: [0x00] [Message] [0x00]
 
-Message Types:
-    0x45 - Dimmer/value set command (with 16-bit value)
-    0x85 - Toggle/on/off command
-    0x40 - Short status/ack
-    0x43 - Multi-byte command/status
+SetValue/Dimmer (0x45):
+  [45] [02] [83 ac] [instance] [42] [02] [brightness]
+  
+  Where:
+    - 45 = SetValue message type
+    - 02 = Sub-type for dimmer/light
+    - 83 ac = Magic bytes (little-endian 0xAC83)
+    - instance = Device instance ID (e.g., 0x21 for Kitchen)
+    - 42 = "set" command
+    - 02 = Command modifier?
+    - brightness = 0-100 (0x00-0x64), or omit for OFF
+
+Known device instances (from tcpdump analysis):
+    - 0x21 = Kitchen light
+    - 0x28 = Bed Ceiling light
 """
 
-import struct
-from typing import Optional
 from dataclasses import dataclass
+from typing import Optional
+from enum import IntEnum
 
 
-@dataclass  
-class CommandResult:
-    """Result of building a command."""
-    raw: bytes
-    description: str
+class MessageType(IntEnum):
+    """Known message types."""
+    DEVICE_STATE = 0x40
+    NODE_INFO = 0x41
+    MULTI_MESSAGE = 0x43
+    SET_VALUE = 0x45
+    TOGGLE = 0x85
+    STATUS_QUERY = 0xC5
+
+
+class DeviceInstance(IntEnum):
+    """Known device instances."""
+    KITCHEN = 0x21
+    BED_CEILING = 0x28
+    # More to be discovered...
+
+
+@dataclass
+class Command:
+    """Base command class."""
+    data: bytes
+    
+    def frame(self) -> bytes:
+        """Return the framed command (with 0x00 delimiters)."""
+        return b'\x00' + self.data + b'\x00'
     
     def __repr__(self):
-        return f"Command({self.description}): {self.raw.hex()}"
+        return f"{self.__class__.__name__}(data={self.data.hex()})"
 
 
-class OneControlCommands:
+def build_dimmer_command(instance: int, brightness: int) -> Command:
     """
-    Build commands for Lippert OneControl system.
-    
-    All commands are prefixed with 0x00 (frame marker) in the TCP stream.
-    """
-    
-    # Magic bytes that appear in all commands
-    MAGIC = bytes([0x83, 0xdc])
-    
-    @staticmethod
-    def toggle_light(instance: int) -> CommandResult:
-        """
-        Toggle a light on/off.
-        
-        Args:
-            instance: Light instance number (0x00-0xFF)
-            
-        Returns:
-            CommandResult with raw bytes to send
-        """
-        # Format: 00 85 02 83 dc <inst> 30 01 aa 00
-        cmd = bytes([
-            0x00,           # Frame start
-            0x85,           # Message type (toggle)
-            0x02,           # Length marker
-            0x83, 0xdc,     # Magic
-            instance,       # Instance
-            0x30,           # Command type
-            0x01,           # Subcommand (toggle)
-            0xaa,           # Unknown constant
-            0x00,           # Terminator
-        ])
-        return CommandResult(cmd, f"toggle light instance 0x{instance:02X}")
-    
-    @staticmethod
-    def set_dimmer(instance: int, value: int) -> CommandResult:
-        """
-        Set a dimmer to a specific value.
-        
-        Args:
-            instance: Dimmer instance number (0x00-0xFF)
-            value: Brightness value (0-0xFFFF, typically 0-1000 or 0-0xC8)
-            
-        Returns:
-            CommandResult with raw bytes to send
-        """
-        # Format: 00 45 02 83 dc <inst> 30 02 <val_lo> <val_hi> 00
-        val_lo = value & 0xFF
-        val_hi = (value >> 8) & 0xFF
-        
-        cmd = bytes([
-            0x00,           # Frame start
-            0x45,           # Message type (set value)
-            0x02,           # Length marker
-            0x83, 0xdc,     # Magic
-            instance,       # Instance
-            0x30,           # Command type
-            0x02,           # Subcommand (set)
-            val_lo,         # Value low byte
-            val_hi,         # Value high byte
-            0x00,           # Terminator
-        ])
-        return CommandResult(cmd, f"set dimmer instance 0x{instance:02X} to {value}")
-    
-    @staticmethod
-    def set_dimmer_percent(instance: int, percent: float) -> CommandResult:
-        """
-        Set a dimmer to a percentage (0-100%).
-        
-        Args:
-            instance: Dimmer instance number
-            percent: Brightness 0.0-100.0%
-            
-        Returns:
-            CommandResult with raw bytes
-        """
-        # Map 0-100% to 0-1000 (observed max value around 0x0AD4 = 2772)
-        value = int(percent * 10)
-        value = max(0, min(1000, value))
-        return OneControlCommands.set_dimmer(instance, value)
-    
-    @staticmethod
-    def request_status(instance: int) -> CommandResult:
-        """
-        Request status for a device instance.
-        
-        Based on observed app traffic, this appears to use 0x45 with 0x04 subtype.
-        """
-        # Format: 00 45 02 83 dc <inst> 04 11 02 2b af 00
-        cmd = bytes([
-            0x00,           # Frame start
-            0x45,           # Message type
-            0x02,           # Length marker
-            0x83, 0xdc,     # Magic
-            instance,       # Instance
-            0x04,           # Command type (request?)
-            0x11,           # Subcommand
-            0x02,           # ?
-            0x2b,           # ?
-            0xaf,           # ?
-            0x00,           # Terminator
-        ])
-        return CommandResult(cmd, f"request status for instance 0x{instance:02X}")
-    
-    @staticmethod
-    def heartbeat() -> CommandResult:
-        """
-        Send a heartbeat/keepalive message.
-        
-        Based on observed periodic messages from the app.
-        """
-        # This is the 53-byte status message seen repeatedly
-        cmd = bytes([
-            0x00,
-            0x43, 0x01, 0x06, 0xf7, 0x01, 0xf0, 0x00, 0x00,
-            0x41, 0x08, 0x41, 0xf7, 0x08, 0x1c, 0x88, 0x43,
-            0x4f, 0xaf, 0x67, 0x82, 0x3c, 0x00, 0x00,
-            0x43, 0x08, 0x02, 0xf7, 0x43, 0x2f, 0xf7, 0x17,
-            0x81, 0x02, 0x01, 0x44, 0x00, 0x00, 0xc3, 0x04,
-            0x01, 0xf7, 0x40, 0x01, 0xc1, 0x00, 0x00, 0x40,
-            0x03, 0x03, 0xf7, 0xec, 0x00,
-        ])
-        return CommandResult(cmd, "heartbeat/keepalive")
-
-
-class InstanceMap:
-    """
-    Map human-readable names to instance numbers.
-    
-    These are RV-specific and would need to be discovered or configured
-    per installation.
-    """
-    
-    def __init__(self):
-        self.instances = {}
-        
-    def add(self, name: str, instance: int, device_type: str = "light"):
-        """Add a named instance."""
-        self.instances[name.lower()] = {
-            "instance": instance,
-            "type": device_type,
-        }
-    
-    def get(self, name: str) -> Optional[int]:
-        """Get instance number by name."""
-        entry = self.instances.get(name.lower())
-        return entry["instance"] if entry else None
-    
-    def list_all(self):
-        """List all known instances."""
-        return list(self.instances.items())
-
-
-# Example instance mappings (these would vary by RV)
-DEFAULT_INSTANCES = InstanceMap()
-# DEFAULT_INSTANCES.add("bedroom_main", 0xC4, "dimmer")
-# DEFAULT_INSTANCES.add("kitchen_ceiling", 0xFB, "dimmer")
-
-
-def build_command(action: str, instance: int, value: Optional[int] = None) -> bytes:
-    """
-    Build a command from action string.
+    Build a dimmer/light command.
     
     Args:
-        action: "toggle", "on", "off", "dim", "set"
-        instance: Device instance number
-        value: Optional value for dim/set actions (0-100 for percent, 0-1000 for raw)
+        instance: Device instance ID (e.g., 0x21 for Kitchen)
+        brightness: Brightness level 0-100 (0=off, 100=full on)
         
     Returns:
-        Raw command bytes to send
+        Command object ready to send
     """
-    if action in ("toggle", "on", "off"):
-        return OneControlCommands.toggle_light(instance).raw
-    elif action == "dim" and value is not None:
-        return OneControlCommands.set_dimmer_percent(instance, value).raw
-    elif action == "set" and value is not None:
-        return OneControlCommands.set_dimmer(instance, value).raw
-    else:
-        raise ValueError(f"Unknown action: {action}")
+    # Clamp brightness
+    brightness = max(0, min(100, brightness))
+    
+    # Message format: [45] [02] [83 ac] [instance] [42] [02] [brightness]
+    data = bytes([
+        0x45,           # Message type: SetValue
+        0x02,           # Sub-type: dimmer
+        0x83, 0xac,     # Magic bytes
+        instance,       # Device instance
+        0x42,           # Command: set
+        0x02,           # Modifier
+        brightness,     # Brightness value
+    ])
+    
+    return Command(data)
+
+
+def build_light_on(instance: int) -> Command:
+    """Build command to turn light ON (100%)."""
+    return build_dimmer_command(instance, 100)
+
+
+def build_light_off(instance: int) -> Command:
+    """
+    Build command to turn light OFF.
+    
+    Note: OFF might use a shorter format without the brightness byte.
+    """
+    # Try with brightness=0 first
+    return build_dimmer_command(instance, 0)
+
+
+def build_toggle_command(instance: int) -> Command:
+    """
+    Build a toggle command (0x85 type).
+    
+    Note: Format not fully understood yet.
+    """
+    # Speculative format based on message type 0x85
+    data = bytes([
+        0x85,           # Message type: Toggle
+        0x02,           # Sub-type
+        0x83, 0xac,     # Magic bytes
+        instance,       # Device instance
+    ])
+    
+    return Command(data)
+
+
+def build_status_query(instance: int = 0x00) -> Command:
+    """
+    Build a status query command.
+    
+    Args:
+        instance: Device instance (0x00 for all?)
+    """
+    # Based on captured 0xC5 messages
+    data = bytes([
+        0xC5,           # Message type: StatusQuery
+        0x04,           # Length?
+        0x01,           # ?
+        0x6d,           # ?
+        0x40,           # ?
+        0x01,           # ?
+        0xcb,           # ?
+    ])
+    
+    return Command(data)
+
+
+# Convenience functions for known devices
+
+def kitchen_on() -> Command:
+    """Turn Kitchen light ON."""
+    return build_light_on(DeviceInstance.KITCHEN)
+
+
+def kitchen_off() -> Command:
+    """Turn Kitchen light OFF."""
+    return build_light_off(DeviceInstance.KITCHEN)
+
+
+def kitchen_dim(brightness: int) -> Command:
+    """Set Kitchen light to specific brightness."""
+    return build_dimmer_command(DeviceInstance.KITCHEN, brightness)
+
+
+def bed_ceiling_on() -> Command:
+    """Turn Bed Ceiling light ON."""
+    return build_light_on(DeviceInstance.BED_CEILING)
+
+
+def bed_ceiling_off() -> Command:
+    """Turn Bed Ceiling light OFF."""
+    return build_light_off(DeviceInstance.BED_CEILING)
+
+
+def bed_ceiling_dim(brightness: int) -> Command:
+    """Set Bed Ceiling light to specific brightness."""
+    return build_dimmer_command(DeviceInstance.BED_CEILING, brightness)
+
+
+if __name__ == '__main__':
+    # Test command building
+    print("OneControl Command Builder")
+    print("=" * 40)
+    
+    commands = [
+        ("Kitchen ON", kitchen_on()),
+        ("Kitchen OFF", kitchen_off()),
+        ("Kitchen 50%", kitchen_dim(50)),
+        ("Bed Ceiling ON", bed_ceiling_on()),
+        ("Bed Ceiling OFF", bed_ceiling_off()),
+        ("Toggle Kitchen", build_toggle_command(DeviceInstance.KITCHEN)),
+        ("Status Query", build_status_query()),
+    ]
+    
+    for name, cmd in commands:
+        print(f"\n{name}:")
+        print(f"  Raw:    {cmd.data.hex()}")
+        print(f"  Framed: {cmd.frame().hex()}")

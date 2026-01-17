@@ -286,18 +286,23 @@ python tools/analyze_capture.py capture.pcap
 ```
 OneControl-RV-C-Protocol/
 ├── rvc/
-│   ├── __init__.py      # Package exports
-│   ├── dgn.py           # DGN definitions and enums
-│   ├── decoder.py       # RV-C message decoder
-│   └── client.py        # TCP client for OneControl
+│   ├── __init__.py         # Package exports
+│   ├── dgn.py              # DGN definitions and enums
+│   ├── decoder.py          # RV-C message decoder
+│   ├── client.py           # TCP client for OneControl
+│   ├── commands.py         # Command builder
+│   ├── cobs.py             # COBS encoder/decoder
+│   └── lippert_protocol.py # Lippert framing layer
 ├── docs/
-│   └── protocol.md      # Detailed protocol documentation
+│   └── PROTOCOL.md         # Detailed protocol documentation
 ├── tools/
-│   └── analyze_capture.py  # Packet capture analyzer
+│   ├── analyze_capture.py  # Packet capture analyzer
+│   ├── decode_capture.py   # TCP message decoder
+│   ├── extract_assemblies.py # .NET assembly extractor
+│   └── decompile_notes.md  # App decompilation findings
 ├── examples/
-│   └── monitor.py       # Example monitoring script
-└── tests/
-    └── test_decoder.py  # Unit tests
+│   └── monitor.py          # Example monitoring script
+└── pixi.toml               # Pixi package manager config
 ```
 
 ## Resources
@@ -362,6 +367,10 @@ Contributions welcome! Areas that need work:
 3. **Commands acknowledged** - Controller sends back status, but state unchanged
 4. **Multiple magic bytes** - Different operations use `83 ac`, `83 ae`, `80 84`, etc.
 5. **Device ID in registration** - `43 4f af 67 82` appears to be app's unique ID
+6. **App is Xamarin/.NET** - Decompiled LippertConnect, extracted 430 .NET assemblies
+7. **COBS encoding** - Protocol uses COBS (Consistent Overhead Byte Stuffing) framing
+8. **CRC validation** - CRC-8 or CRC-32 LE checksums used, algorithm still unknown
+9. **Nonce/counter byte** - Commands include a varying byte that affects checksum
 
 ### Tested Command Formats
 

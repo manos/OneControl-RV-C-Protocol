@@ -8,7 +8,7 @@ using a proprietary TCP protocol (port 6969) that wraps RV-C messages.
 from .dgn import DGN, DGN_NAMES
 from .decoder import RVCDecoder
 from .client import OneControlClient
-from .commands import OneControlCommands, build_command
+from .commands import Command, build_dimmer_command, build_light_on, build_light_off
 from .lippert_protocol import LippertProtocolDecoder, LippertMessage
 
 __version__ = "0.1.0"
@@ -17,8 +17,10 @@ __all__ = [
     "DGN_NAMES", 
     "RVCDecoder", 
     "OneControlClient",
-    "OneControlCommands",
-    "build_command",
+    "Command",
+    "build_dimmer_command",
+    "build_light_on",
+    "build_light_off",
     "LippertProtocolDecoder",
     "LippertMessage",
 ]

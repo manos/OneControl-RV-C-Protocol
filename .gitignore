@@ -58,3 +58,8 @@ Thumbs.db
 tools/decompile/*.apk
 tools/decompile/output/
 tools/decompile/native/
+
+# Extracted DLLs (too large, can be regenerated)
+tools/decompile/extracted_dlls/
+tools/decompile/output/
+
