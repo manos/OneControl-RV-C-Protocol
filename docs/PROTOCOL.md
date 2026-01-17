@@ -1,210 +1,260 @@
 # Lippert OneControl TCP Protocol
 
-Reverse-engineered documentation of the Lippert OneControl proprietary TCP protocol.
+Detailed reverse-engineering notes for the Lippert OneControl TCP protocol on port 6969.
 
-## Network Overview
+> **Status**: Monitoring works, control does NOT work. See [Investigation Results](#investigation-results).
 
-```
-┌─────────────────┐     WiFi (192.168.1.x)    ┌──────────────────┐
-│  LippertConnect │◄─────────────────────────►│  OneControl      │
-│  App (iPhone)   │      TCP port 6969        │  Controller      │
-│  10.2.0.162     │                           │  192.168.1.1     │
-└─────────────────┘                           └────────┬─────────┘
-                                                       │ CAN Bus
-                                              ┌────────┴─────────┐
-                                              │  RV-C Network    │
-                                              │  (Lights, HVAC,  │
-                                              │   Tanks, etc.)   │
-                                              └──────────────────┘
-```
+## Network Setup
 
-## WiFi Access Point
+### OneControl WiFi Access Point
 
-- **SSID**: `MyRV_<serial>` (e.g., `MyRV_002630732020218F`)
-- **Security**: WPA2-PSK
-- **Password**: Device-specific (found on unit or documentation)
-- **DHCP Range**: `10.2.0.x` for clients, `192.168.1.1` for controller
-
-## TCP Protocol (Port 6969)
-
-### Frame Format
-
-All messages use a common framing format:
+The OneControl system creates its own WiFi network:
 
 ```
-[00] [type] [len] [83 dc] [instance] [cmd] [subcmd] [data...] [00]
+SSID:     MyRV_<serial>        (e.g., MyRV_002630732020218F)
+Security: WPA2-PSK
+Gateway:  192.168.1.1
+DHCP:     192.168.1.100+
 ```
 
-| Field | Size | Description |
-|-------|------|-------------|
-| Frame Start | 1 byte | Always `0x00` |
-| Type | 1 byte | Message type (see below) |
-| Length/Marker | 1 byte | Typically `0x02` for short commands |
-| Magic | 2 bytes | Always `0x83 0xDC` |
-| Instance | 1 byte | Device instance number (0x00-0xFF) |
-| Command | 1 byte | Command type |
-| Subcommand | 1 byte | Command subtype |
-| Data | variable | Command-specific data |
-| Terminator | 1 byte | Usually `0x00` |
+### TCP Connection
+
+- **Host**: `192.168.1.1`
+- **Port**: `6969`
+- **Protocol**: Custom binary (NOT HTTP, NOT raw RV-C)
+
+## Message Format
+
+### General Structure
+
+All messages follow this pattern:
+
+```
+[00] [Type] [Sub] [Magic...] [Instance] [Cmd] [Data...] [00]
+ │     │      │       │          │        │       │       │
+ │     │      │       │          │        │       │       └── End delimiter
+ │     │      │       │          │        │       └────────── Variable payload
+ │     │      │       │          │        └────────────────── Command byte
+ │     │      │       │          └─────────────────────────── Device instance
+ │     │      │       └────────────────────────────────────── 2-byte magic
+ │     │      └────────────────────────────────────────────── Sub-type/length
+ │     └───────────────────────────────────────────────────── Message type
+ └─────────────────────────────────────────────────────────── Start delimiter
+```
 
 ### Message Types
 
-| Type | Name | Description |
-|------|------|-------------|
-| `0x40` | STATUS_SHORT | Short status message (3-4 bytes data) |
-| `0x41` | STATUS_8 | 8-byte status message |
-| `0x43` | MULTI_CMD | Multi-byte command/status |
-| `0x45` | SET_VALUE | Set value command (with 16-bit value) |
-| `0x49` | HEARTBEAT | Periodic heartbeat/sync |
-| `0x85` | TOGGLE | Toggle/on/off command |
-| `0xC3` | DEVICE_STATUS | Device status report |
-| `0xC5` | DEVICE_CONFIG | Device configuration status |
+| Type | Hex | Direction | Description |
+|------|-----|-----------|-------------|
+| STATUS | `0x40` | Both | Short device state |
+| NODE | `0x41` | Both | Device registration/node info |
+| MULTI | `0x43` | Both | Multi-part query/response |
+| SET | `0x45` | Both | Status poll or set value |
+| BROADCAST | `0x85` | Ctrl→App | Status broadcast |
+| CONFIG | `0xC3` | Ctrl→App | Configuration data |
+| EXT_STATUS | `0xC5` | Ctrl→App | Extended status |
 
-### Commands
+### Magic Byte Sequences
 
-#### Toggle Light (0x85)
+Different operations use different 2-byte magic sequences:
 
-Toggle a light on or off:
+| Magic | Hex | Observed Usage |
+|-------|-----|----------------|
+| `80 84` | Legacy | Older command format |
+| `80 86` | Alternate | Alternative control |
+| `83 ac` | Primary | Polling, status requests |
+| `83 ae` | Control | Type 40 control commands |
+| `83 7d` | Config | Device configuration |
+| `80 a1` | Extended | Extended status messages |
+| `80 70` | System | System-level messages |
 
+## Captured Message Examples
+
+### Polling Messages (App → Controller)
+
+**Status Poll** (sent every ~1 second):
 ```
-00 85 02 83 dc <instance> 30 01 aa 00
-```
-
-Example - Toggle instance 0xC4:
-```
-00 85 02 83 dc c4 30 01 aa 00
-```
-
-Response:
-```
-00 85 12 83 dc c4 30 01 <status> 00 00 ...
-```
-
-#### Set Dimmer Value (0x45)
-
-Set a dimmer to a specific brightness:
-
-```
-00 45 02 83 dc <instance> 30 02 <val_lo> <val_hi> 00
-```
-
-| Field | Description |
-|-------|-------------|
-| instance | Device instance (0x00-0xFF) |
-| val_lo | Low byte of value |
-| val_hi | High byte of value |
-
-Value range observed: 0-1000 (0x0000-0x03E8) maps to 0-100%
-
-Example - Set instance 0xC4 to 50% (value 500 = 0x01F4):
-```
-00 45 02 83 dc c4 30 02 f4 01 00
+00 45 02 83 ac 04 11 02 2b c2 00
+│  │  │  │     │  │  │  │     │
+│  │  │  │     │  │  │  │     └── End
+│  │  │  │     │  │  │  └──────── Checksum/counter: 0x2bc2
+│  │  │  │     │  │  └─────────── Data length: 2
+│  │  │  │     │  └────────────── Command: 0x11 (status request)
+│  │  │  │     └───────────────── Instance: 0x04
+│  │  │  └─────────────────────── Magic: 83 ac
+│  │  └────────────────────────── Sub-type: 02
+│  └───────────────────────────── Type: 45
+└──────────────────────────────── Start
 ```
 
-#### Request Status (0x45 with 0x04)
-
+**Device Query**:
 ```
-00 45 02 83 dc <instance> 04 11 02 2b af 00
-```
-
-### Status Messages
-
-#### Device Status (0xC5)
-
-Periodic status updates from controller:
-
-```
-00 c5 06 03 <device_class> 80 ff 40 01 <value> 00
+00 43 01 06 eb 01 51 00
+│  │  │  │  │  │  │  │
+│  │  │  │  │  │  │  └── End
+│  │  │  │  │  │  └───── Value: 0x51 (81 decimal)
+│  │  │  │  │  └──────── Sub-command: 01
+│  │  │  │  └─────────── Instance: 0xEB (235)
+│  │  │  └────────────── Command: 06
+│  │  └───────────────── Sub-type: 01
+│  └──────────────────── Type: 43
+└─────────────────────── Start
 ```
 
-Example values observed:
-- `c5 06 03 77 80 ff 40 01 13 00` - Device 0x77, value 0x13
-- `c5 06 03 3f c0 ff 40 01 50 00` - Device 0x3F, value 0x50
+### Registration Messages
 
-#### Node Status (0x41)
-
-8-byte status for network nodes:
-
+**App Registration** (sent on connection):
 ```
-00 41 08 c3 <node_hi> <node_lo> 02 14 04 08 91 5d <status>
-```
-
-### Heartbeat/Keepalive
-
-The app sends periodic 53-byte keepalive messages:
-
-```
-00 43 01 06 f7 01 f0 00 00
-   41 08 41 f7 08 1c 88 43 4f af 67 82 3c 00 00
-   43 08 02 f7 43 2f f7 17 81 02 01 44 00 00
-   c3 04 01 f7 40 01 c1 00 00
-   40 03 03 f7 ec 00
+00 41 08 41 eb 08 1c 88 43 4f af 67 82 79 00
+│  │  │  │  │  │              │           │
+│  │  │  │  │  │              │           └── End
+│  │  │  │  │  │              └────────────── Device ID: 434faf6782
+│  │  │  │  │  └───────────────────────────── Unknown: 1c 88
+│  │  │  │  └──────────────────────────────── Instance: 0xEB
+│  │  │  └─────────────────────────────────── Sub-command: 41
+│  │  └────────────────────────────────────── Length: 08
+│  └───────────────────────────────────────── Type: 41
+└──────────────────────────────────────────── Start
 ```
 
-## Instance Numbers
+### Control Commands (Captured from App)
 
-Instance numbers are RV-specific and identify individual devices. They need to be
-discovered by monitoring traffic or from RV documentation.
-
-Observed in testing:
-- `0xC4` (196) - A dimmable light
-- `0xFB` (251) - Another light/device
-- `0x28` (40) - ?
-- `0x15` (21) - ?
-
-## Relationship to RV-C
-
-The OneControl system uses RV-C (Recreational Vehicle CAN) internally on the 
-CAN bus, but the TCP protocol is proprietary framing. The instance numbers
-appear to map to RV-C device instances.
-
-Standard RV-C DGNs (Data Group Numbers) may be referenced internally:
-- `0x1FEDA` - DC_DIMMER_STATUS_3 
-- `0x1FEDB` - DC_DIMMER_COMMAND_2
-- `0x1FFB7` - TANK_STATUS
-- etc.
-
-See `rvc/dgn.py` for a complete list of known DGNs.
-
-## Example Session
-
-```python
-import socket
-
-HOST, PORT = "192.168.1.1", 6969
-
-# Connect
-sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-sock.connect((HOST, PORT))
-
-# Toggle light instance 0xC4
-toggle = bytes([0x00, 0x85, 0x02, 0x83, 0xdc, 0xc4, 0x30, 0x01, 0xaa, 0x00])
-sock.send(toggle)
-
-# Read response
-response = sock.recv(1024)
-print(f"Response: {response.hex()}")
-
-sock.close()
+**SET Command** (type 45, cmd 42):
+```
+00 45 02 83 ac 28 42 02 04 5d 00
+│  │  │  │     │  │  │  │     │
+│  │  │  │     │  │  │  │     └── End
+│  │  │  │     │  │  │  └──────── Value: 0x045d (1117) little-endian
+│  │  │  │     │  │  └─────────── Data length: 02
+│  │  │  │     │  └────────────── Command: 42 (SET)
+│  │  │  │     └───────────────── Instance: 0x28
+│  │  │  └─────────────────────── Magic: 83 ac
+│  │  └────────────────────────── Sub-type: 02
+│  └───────────────────────────── Type: 45
+└──────────────────────────────── Start
 ```
 
-## Tools
-
-### Capture Traffic
-
-```bash
-# On a device connected to OneControl WiFi:
-sudo tcpdump -i wlan0 -n -X port 6969
+**Type 40 Control** (different magic):
+```
+00 40 05 83 ae 28 01 fd 00
+│  │  │  │     │  │  │  │
+│  │  │  │     │  │  │  └── End
+│  │  │  │     │  │  └───── Value: 0xfd (253)
+│  │  │  │     │  └──────── Sub-command: 01
+│  │  │  │     └─────────── Instance: 0x28
+│  │  │  └────────────────── Magic: 83 ae
+│  │  └───────────────────── Sub-type: 05
+│  └──────────────────────── Type: 40
+└─────────────────────────── Start
 ```
 
-### Analyze Captures
+### Status Responses (Controller → App)
 
-```bash
-python tools/analyze_capture.py --raw "00850283dcc43001aa00"
+**Status for instance 0x28**:
+```
+00 45 12 83 ac 28 42 02 04 a6 00
+                          │
+                          └── Current value: 0x04a6 (1190)
+```
+
+**Extended Status**:
+```
+00 45 06 03 28 81 ff 81 95 01 47 00
+              │           │     │
+              │           │     └── Unknown
+              │           └──────── State: 0x95 (149)
+              └──────────────────── Instance: 0x28
+```
+
+## Device Instances
+
+Observed device instances from captured traffic:
+
+| Instance | Hex | Device Type | Notes |
+|----------|-----|-------------|-------|
+| 4 | `0x04` | System | Polled frequently |
+| 5 | `0x05` | Unknown | Status broadcasts |
+| 14 | `0x0E` | Unknown | |
+| 40 | `0x28` | Light | Bed Ceiling (toggle) |
+| 235 | `0xEB` | Light | Kitchen (toggle) |
+| 236 | `0xEC` | System | Polled frequently |
+| 242 | `0xF2` | Unknown | Configuration |
+
+## Investigation Results
+
+### What We Verified
+
+1. **Phone uses ONLY TCP** - No Bluetooth, no cloud, no DNS queries
+2. **Connection is accepted** - Controller responds to our messages
+3. **Status is readable** - We can see device states in responses
+4. **App commands captured** - We have exact bytes the app sends
+
+### What We Tested (All Failed to Control)
+
+| Attempt | Command | Result |
+|---------|---------|--------|
+| Exact replay | App's captured bytes | Response, no change |
+| Type 45/42 SET | `00 45 02 83 ac 28 42 02 <val> 00` | Response, no change |
+| Type 43 query | `00 43 01 06 eb 01 51 00` | Response, no change |
+| Type 40 control | `00 40 05 83 ae 28 01 fd 00` | Response, no change |
+| Different magic | `80 84`, `80 86`, `83 ae` | Response, no change |
+| Different values | `00`, `ff`, `04c2`, `045d` | Response, no change |
+| With registration | Full init sequence first | Response, no change |
+
+### Conclusion
+
+The TCP protocol on port 6969 appears to be **read-only for monitoring**. Control likely requires:
+
+1. **Direct CAN bus access** - Using RV-C protocol over physical CAN
+2. **App decompilation** - To find hidden authentication/signing
+3. **Different interface** - Possibly undocumented port or protocol
+
+## Next Steps
+
+1. **Decompile LippertConnect app** - Find command signing/authentication
+2. **Add CAN bus hardware** - MCP2515 module for direct RV-C
+3. **Research RV-Bridge** - ESP32 project that does RV-C → HomeKit
+
+## Raw Packet Captures
+
+### Full App Startup Sequence
+
+```
+# Connection established
+# App sends (19 bytes):
+00 45 02 83 ac 04 11 02 2b c2 00 00 43 01 06 eb 01 51 00
+
+# App sends registration (45 bytes):
+00 41 08 41 eb 08 1c 88 43 4f af 67 82 02 00 00
+43 08 02 eb 43 2f eb 17 81 02 01 0c 00 00
+c3 04 01 eb 40 01 03 00 00 40 03 03 eb 66 00
+
+# Controller responds with status broadcasts...
+# App continues polling every ~1 second
+```
+
+### Light Toggle Sequence (Captured)
+
+When user toggles Kitchen light in app:
+
+```
+# Poll + command
+00 45 02 83 ac 04 11 02 2b c2 00
+00 43 01 06 eb 01 51 00
+
+# Registration refresh
+00 41 08 41 eb 08 1c 88 43 4f af 67 82 79 00
+
+# Extended messages
+00 43 08 02 eb 43 2f eb 17 81 02 01 27 00 00
+c3 04 01 eb 40 01 9c 00
+
+# Control attempt (maybe?)
+00 40 03 03 eb d2 00
 ```
 
 ## References
 
-- [RV-C Specification](http://www.rv-c.com/) - RVIA
-- [RV-Bridge](https://github.com/rubillos/RV-Bridge) - ESP32 HomeKit bridge with DGN definitions
-- [eRVin](https://github.com/linuxkidd/ervin) - Raspberry Pi RV-C gateway
+- [RV-C Specification](http://www.rv-c.com/) - Official standard
+- [RV-Bridge](https://github.com/rubillos/RV-Bridge) - ESP32 RV-C to HomeKit
+- [CoachProxyOS](https://github.com/linuxkidd/coachproxyos) - RV monitoring

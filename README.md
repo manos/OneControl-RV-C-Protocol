@@ -133,19 +133,60 @@ The TCP protocol uses a **proprietary Lippert framing**, not raw RV-C CAN frames
 
 #### Device Instances (Example RV)
 
-| Instance | Device |
-|----------|--------|
-| `0x04` | Unknown (polled frequently) |
-| `0x21` | Kitchen light |
-| `0x28` | Bed Ceiling light |
-| `0xEC` | Unknown (polled frequently) |
-| `0xF7` | App virtual device? |
+| Instance | Device | Magic Bytes |
+|----------|--------|-------------|
+| `0x04` | System poll target | `83 ac` |
+| `0x28` | Light (toggle type) | `83 ac`, `83 ae` |
+| `0xEB` | Kitchen light | `83 ac` |
+| `0xEC` | System poll target | `83 ac` |
+| `0xF2` | Unknown device | `83 7d` |
 
-> ⚠️ **Control commands not yet working** - The protocol accepts our messages but doesn't actuate devices. Possible causes:
-> - Missing authentication/pairing step
-> - Session state requirement
-> - Incorrect command format
-> - Read-only TCP interface (control via CAN only)
+#### Multiple Magic Byte Sequences
+
+Different operations use different magic bytes:
+
+| Magic | Usage |
+|-------|-------|
+| `80 84` | Legacy/alternate format |
+| `80 86` | Alternate control format |
+| `83 ac` | Primary polling/status |
+| `83 ae` | Control commands (type 40) |
+| `83 7d` | Device configuration |
+
+#### Observed Command Patterns
+
+**App Polling Sequence** (sent every ~1 second):
+```
+00 45 02 83 ac 04 11 02 2b c2 00   # Poll instance 0x04
+00 43 01 06 eb 01 51 00            # Query instance 0xEB
+```
+
+**Device Registration** (sent on connect):
+```
+00 41 08 41 eb 08 1c 88 43 4f af 67 82 79 00
+         │        └──────────────────────── Device ID (unique per app)
+         └───────────────────────────────── Instance
+```
+
+**Control Command Candidates** (captured but not working):
+```
+00 45 02 83 ac 28 42 02 04 5d 00   # SET for instance 0x28, value 0x045d
+00 40 05 83 ae 28 01 fd 00         # Type 40 control, value 0xfd
+00 45 06 03 28 81 ff 81 95 01 47 00  # Extended format
+```
+
+> ⚠️ **TCP Control Not Working** - After extensive testing, the TCP interface appears to be **read-only** or requires unknown authentication.
+> 
+> **Evidence:**
+> - Commands receive valid responses (status broadcasts continue)
+> - Response shows current state, not changed state
+> - App traffic captured but exact replay doesn't actuate
+> - No visible difference between our commands and app commands
+> 
+> **Likely Cause:** The TCP interface is for **monitoring only**. Actual control probably happens via:
+> - Direct CAN bus commands
+> - Bluetooth (though app works with BT off, so unlikely)
+> - Unknown authentication/session mechanism
 
 ### Alternative: CAN Bus Direct Access
 
@@ -299,20 +340,44 @@ Contributions welcome! Areas that need work:
 ## Investigation Log
 
 ### What Works ✅
-- WiFi connection to OneControl AP
+- WiFi connection to OneControl AP (`MyRV_*` network)
 - TCP connection to port 6969
-- Receiving status broadcasts
-- Identifying device instances
-- Capturing app traffic
+- Receiving continuous status broadcasts
+- Identifying device instances from traffic
+- Capturing and analyzing app traffic via tcpdump
+- Distinguishing polling vs command messages
+- Phone app works with Bluetooth OFF (confirms WiFi control)
 
 ### What Doesn't Work ❌
-- Sending control commands (lights don't respond)
-- Device registration appears to succeed but control fails
+- **Any control command format we tried** - 50+ variations tested
+- Exact byte-for-byte replay of captured app commands
+- Different magic byte combinations (`80 84`, `83 ac`, `83 ae`)
+- Type `40`, `43`, `45` command formats
+- Various value encodings (little-endian, big-endian)
 
-### Theories
-1. **Missing session token** - App may establish encrypted session
-2. **Command routing** - Commands may route through touch panel via CAN
-3. **Protocol versioning** - Our commands may be for different firmware
+### Key Findings
+
+1. **No cloud traffic** - Phone talks ONLY to `192.168.1.1:6969`, no DNS queries
+2. **Bluetooth not required** - App works with phone BT disabled
+3. **Commands acknowledged** - Controller sends back status, but state unchanged
+4. **Multiple magic bytes** - Different operations use `83 ac`, `83 ae`, `80 84`, etc.
+5. **Device ID in registration** - `43 4f af 67 82` appears to be app's unique ID
+
+### Tested Command Formats
+
+| Format | Example | Result |
+|--------|---------|--------|
+| `45/42 SET` | `00 45 02 83 ac 28 42 02 04 5d 00` | Response, no change |
+| `43/06 QUERY` | `00 43 01 06 eb 01 51 00` | Response, no change |
+| `40/05 CTRL` | `00 40 05 83 ae 28 01 fd 00` | Response, no change |
+| `45/06 EXT` | `00 45 06 03 28 81 ff 81 95 01 47 00` | Response, no change |
+
+### Theories (Updated)
+
+1. ~~Missing session token~~ - Registration appears to work
+2. **CAN-only control** - TCP may be read-only, control via CAN bus
+3. **Checksum/nonce** - Values like `2b c2`, `51`, `fd` may be computed
+4. **App signing** - Commands may be cryptographically signed
 
 ## License
 
