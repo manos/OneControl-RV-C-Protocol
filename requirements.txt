@@ -1,0 +1,10 @@
+# OneControl RV-C Protocol Library Requirements
+
+# No external dependencies for core library - uses only stdlib
+# asyncio, struct, dataclasses, enum, logging are all built-in
+
+# Optional development dependencies:
+# pytest>=7.0.0
+# pytest-asyncio>=0.21.0
+# black>=23.0.0
+# mypy>=1.0.0
