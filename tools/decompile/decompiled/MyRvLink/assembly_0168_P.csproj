@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>OneControl.Direct.MyRvLink</AssemblyName>
+    <GenerateAssemblyInfo>False</GenerateAssemblyInfo>
+    <TargetFramework>netcoreapp8.0</TargetFramework>
+  </PropertyGroup>
+  <PropertyGroup>
+    <LangVersion>12.0</LangVersion>
+    <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <PropertyGroup />
+  <ItemGroup />
+  <ItemGroup>
+    <Reference Include="OneControl.Devices" />
+    <Reference Include="IDS.Portable.LogicalDevices" />
+    <Reference Include="ids.portable.common" />
+    <Reference Include="System.Collections" />
+    <Reference Include="System.Collections.Concurrent" />
+    <Reference Include="IDS.Core" />
+    <Reference Include="IDS.Core.IDS_CAN" />
+    <Reference Include="IDS.Core.IDS_CAN.Descriptors" />
+    <Reference Include="IDS.Portable.Devices.JaycoTbbGateway" />
+    <Reference Include="Newtonsoft.Json" />
+    <Reference Include="System.Linq" />
+    <Reference Include="System.Threading" />
+  </ItemGroup>
+</Project>

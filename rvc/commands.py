@@ -1,191 +1,286 @@
 """
 OneControl command building.
 
-Message format (discovered from LippertConnect decompilation):
+Based on decompiled LippertConnect app (OneControl.Direct.MyRvLink namespace).
 
-Frame: [0x00] [Message] [0x00]
+Command Structure (MyRvLinkCommand):
+  [ClientCommandId (2 bytes, LE)] [CommandType (1 byte)] [Payload...]
 
-SetValue/Dimmer (0x45):
-  [45] [02] [83 ac] [instance] [42] [02] [brightness]
-  
-  Where:
-    - 45 = SetValue message type
-    - 02 = Sub-type for dimmer/light
-    - 83 ac = Magic bytes (little-endian 0xAC83)
-    - instance = Device instance ID (e.g., 0x21 for Kitchen)
-    - 42 = "set" command
-    - 02 = Command modifier?
-    - brightness = 0-100 (0x00-0x64), or omit for OFF
+For ActionDimmable (CommandType=67):
+  [ClientCommandId (2 bytes, LE)] [67] [DeviceTableId] [DeviceId] [LightCommand...]
 
-Known device instances (from tcpdump analysis):
-    - 0x21 = Kitchen light
-    - 0x28 = Bed Ceiling light
+LightCommand (LogicalDeviceLightDimmableCommand, 8 bytes):
+  [Command] [MaxBrightness] [Duration] [CycleTime1 MSB] [CycleTime1 LSB] 
+  [CycleTime2 MSB] [CycleTime2 LSB] [Undefined]
+
+DimmableLightCommand enum:
+  0 = Off
+  1 = On
+  2 = Blink
+  3 = Swell
+  4 = Settings
+  127 = Restore (turn on to last brightness)
+
+The entire command is then COBS encoded with CRC-8 before sending.
 """
 
 from dataclasses import dataclass
 from typing import Optional
 from enum import IntEnum
+import struct
+
+from . import cobs
 
 
-class MessageType(IntEnum):
-    """Known message types."""
-    DEVICE_STATE = 0x40
-    NODE_INFO = 0x41
-    MULTI_MESSAGE = 0x43
-    SET_VALUE = 0x45
-    TOGGLE = 0x85
-    STATUS_QUERY = 0xC5
+class MyRvLinkCommandType(IntEnum):
+    """Command types from MyRvLinkCommandType enum."""
+    UNKNOWN = 0
+    GET_DEVICES = 1
+    GET_DEVICES_METADATA = 2
+    REMOVE_OFFLINE_DEVICES = 3
+    RENAME_DEVICE = 4
+    SET_REAL_TIME_CLOCK = 5
+    GET_PRODUCT_DTC_VALUES = 16
+    GET_DEVICE_PID_LIST = 17
+    GET_DEVICE_PID = 18
+    SET_DEVICE_PID = 19
+    GET_DEVICE_PID_WITH_ADDRESS = 20
+    SET_DEVICE_PID_WITH_ADDRESS = 21
+    GET_DEVICE_BLOCK_LIST = 48
+    GET_DEVICE_BLOCK_PROPERTIES = 49
+    START_DEVICE_BLOCK_TRANSFER = 50
+    DEVICE_BLOCK_WRITE_DATA = 51
+    STOP_DEVICE_BLOCK_TRANSFER = 52
+    ACTION_SWITCH = 64
+    ACTION_MOVEMENT = 65
+    ACTION_GENERATOR_GENIE = 66
+    ACTION_DIMMABLE = 67
+    ACTION_RGB = 68
+    ACTION_HVAC = 69
+    ACTION_ACCESSORY_GATEWAY = 70
+    LEVELER4_BUTTON_COMMAND = 80
+    LEVELER5_COMMAND = 81
+    LEVELER1_BUTTON_COMMAND = 82
+    LEVELER3_BUTTON_COMMAND = 83
+    GET_FIRMWARE_INFORMATION = 96
+    DIAGNOSTICS = 102
+    INVALID = 255
 
 
-class DeviceInstance(IntEnum):
-    """Known device instances."""
-    KITCHEN = 0x21
-    BED_CEILING = 0x28
-    # More to be discovered...
+class DimmableLightCommand(IntEnum):
+    """Light command values from DimmableLightCommand enum."""
+    OFF = 0
+    ON = 1
+    BLINK = 2
+    SWELL = 3
+    SETTINGS = 4
+    RESTORE = 127  # Turn on to last brightness
+
+
+# Default cycle time for blink/swell modes
+DEFAULT_CYCLE_TIME = 220
+
+
+# Global command ID counter (wraps at 65535)
+_command_id_counter = 0
+
+
+def _next_command_id() -> int:
+    """Get next command ID (incrementing counter)."""
+    global _command_id_counter
+    cmd_id = _command_id_counter
+    _command_id_counter = (_command_id_counter + 1) & 0xFFFF
+    return cmd_id
 
 
 @dataclass
 class Command:
     """Base command class."""
-    data: bytes
+    raw_data: bytes  # Unencoded command data
     
-    def frame(self) -> bytes:
-        """Return the framed command (with 0x00 delimiters)."""
-        return b'\x00' + self.data + b'\x00'
+    def encode(self) -> bytes:
+        """Return the COBS+CRC encoded command ready to send."""
+        return cobs.encode(self.raw_data, use_crc=True, prepend_start=True)
     
     def __repr__(self):
-        return f"{self.__class__.__name__}(data={self.data.hex()})"
+        return f"{self.__class__.__name__}(raw={self.raw_data.hex()}, encoded={self.encode().hex()})"
 
 
-def build_dimmer_command(instance: int, brightness: int) -> Command:
+def build_light_command(
+    device_table_id: int,
+    device_id: int,
+    command: DimmableLightCommand,
+    max_brightness: int = 0,
+    duration: int = 0,
+    cycle_time1: int = 0,
+    cycle_time2: int = 0,
+    command_id: Optional[int] = None
+) -> Command:
     """
-    Build a dimmer/light command.
+    Build a dimmable light command.
     
     Args:
-        instance: Device instance ID (e.g., 0x21 for Kitchen)
-        brightness: Brightness level 0-100 (0=off, 100=full on)
+        device_table_id: Device table ID (identifies the device type/group)
+        device_id: Device ID within the table
+        command: Light command (OFF, ON, RESTORE, etc.)
+        max_brightness: Brightness level 0-255 (for ON/BLINK/SWELL)
+        duration: Duration parameter
+        cycle_time1: Cycle time 1 for blink/swell (default 220 if 0)
+        cycle_time2: Cycle time 2 for blink/swell (default 220 if 0)
+        command_id: Optional command ID (auto-generated if None)
         
     Returns:
-        Command object ready to send
+        Command object ready to encode and send
     """
-    # Clamp brightness
-    brightness = max(0, min(100, brightness))
+    if command_id is None:
+        command_id = _next_command_id()
     
-    # Message format: [45] [02] [83 ac] [instance] [42] [02] [brightness]
-    data = bytes([
-        0x45,           # Message type: SetValue
-        0x02,           # Sub-type: dimmer
-        0x83, 0xac,     # Magic bytes
-        instance,       # Device instance
-        0x42,           # Command: set
-        0x02,           # Modifier
-        brightness,     # Brightness value
+    # For blink/swell, set default cycle times if not specified
+    if command in (DimmableLightCommand.BLINK, DimmableLightCommand.SWELL):
+        if cycle_time1 == 0 or cycle_time2 == 0:
+            cycle_time1 = cycle_time2 = DEFAULT_CYCLE_TIME
+    
+    # Build the light command data (8 bytes)
+    light_cmd = bytes([
+        command,                          # Byte 0: Command
+        max_brightness,                   # Byte 1: Max brightness
+        duration,                         # Byte 2: Duration
+        (cycle_time1 >> 8) & 0xFF,       # Byte 3: CycleTime1 MSB
+        cycle_time1 & 0xFF,              # Byte 4: CycleTime1 LSB
+        (cycle_time2 >> 8) & 0xFF,       # Byte 5: CycleTime2 MSB
+        cycle_time2 & 0xFF,              # Byte 6: CycleTime2 LSB
+        0,                                # Byte 7: Undefined
     ])
     
-    return Command(data)
-
-
-def build_light_on(instance: int) -> Command:
-    """Build command to turn light ON (100%)."""
-    return build_dimmer_command(instance, 100)
-
-
-def build_light_off(instance: int) -> Command:
-    """
-    Build command to turn light OFF.
-    
-    Note: OFF might use a shorter format without the brightness byte.
-    """
-    # Try with brightness=0 first
-    return build_dimmer_command(instance, 0)
-
-
-def build_toggle_command(instance: int) -> Command:
-    """
-    Build a toggle command (0x85 type).
-    
-    Note: Format not fully understood yet.
-    """
-    # Speculative format based on message type 0x85
-    data = bytes([
-        0x85,           # Message type: Toggle
-        0x02,           # Sub-type
-        0x83, 0xac,     # Magic bytes
-        instance,       # Device instance
+    # Build full command: [CmdId LE][Type][TableId][DeviceId][LightCmd]
+    raw_data = struct.pack('<H', command_id)  # Little-endian command ID
+    raw_data += bytes([
+        MyRvLinkCommandType.ACTION_DIMMABLE,
+        device_table_id,
+        device_id,
     ])
+    raw_data += light_cmd
     
-    return Command(data)
+    return Command(raw_data)
 
 
-def build_status_query(instance: int = 0x00) -> Command:
+def build_light_on(device_table_id: int, device_id: int, brightness: int = 200) -> Command:
     """
-    Build a status query command.
+    Build command to turn light ON.
     
     Args:
-        instance: Device instance (0x00 for all?)
+        device_table_id: Device table ID
+        device_id: Device ID
+        brightness: Brightness level 0-255 (default 200 = ~78%)
     """
-    # Based on captured 0xC5 messages
-    data = bytes([
-        0xC5,           # Message type: StatusQuery
-        0x04,           # Length?
-        0x01,           # ?
-        0x6d,           # ?
-        0x40,           # ?
-        0x01,           # ?
-        0xcb,           # ?
-    ])
+    return build_light_command(
+        device_table_id, device_id,
+        DimmableLightCommand.ON,
+        max_brightness=brightness
+    )
+
+
+def build_light_off(device_table_id: int, device_id: int) -> Command:
+    """Build command to turn light OFF."""
+    return build_light_command(
+        device_table_id, device_id,
+        DimmableLightCommand.OFF
+    )
+
+
+def build_light_restore(device_table_id: int, device_id: int) -> Command:
+    """Build command to restore light to last brightness."""
+    return build_light_command(
+        device_table_id, device_id,
+        DimmableLightCommand.RESTORE
+    )
+
+
+def build_light_settings(device_table_id: int, device_id: int, 
+                         max_brightness: int, duration: int) -> Command:
+    """Build command to set light settings."""
+    return build_light_command(
+        device_table_id, device_id,
+        DimmableLightCommand.SETTINGS,
+        max_brightness=max_brightness,
+        duration=duration
+    )
+
+
+def build_get_devices(command_id: Optional[int] = None) -> Command:
+    """Build command to get list of devices."""
+    if command_id is None:
+        command_id = _next_command_id()
     
-    return Command(data)
+    raw_data = struct.pack('<H', command_id)
+    raw_data += bytes([MyRvLinkCommandType.GET_DEVICES])
+    
+    return Command(raw_data)
 
 
-# Convenience functions for known devices
-
-def kitchen_on() -> Command:
-    """Turn Kitchen light ON."""
-    return build_light_on(DeviceInstance.KITCHEN)
-
-
-def kitchen_off() -> Command:
-    """Turn Kitchen light OFF."""
-    return build_light_off(DeviceInstance.KITCHEN)
-
-
-def kitchen_dim(brightness: int) -> Command:
-    """Set Kitchen light to specific brightness."""
-    return build_dimmer_command(DeviceInstance.KITCHEN, brightness)
+def build_get_devices_metadata(command_id: Optional[int] = None) -> Command:
+    """Build command to get device metadata."""
+    if command_id is None:
+        command_id = _next_command_id()
+    
+    raw_data = struct.pack('<H', command_id)
+    raw_data += bytes([MyRvLinkCommandType.GET_DEVICES_METADATA])
+    
+    return Command(raw_data)
 
 
-def bed_ceiling_on() -> Command:
-    """Turn Bed Ceiling light ON."""
-    return build_light_on(DeviceInstance.BED_CEILING)
+# Convenience class for working with discovered devices
+@dataclass
+class LightDevice:
+    """Represents a discovered light device."""
+    name: str
+    table_id: int
+    device_id: int
+    
+    def on(self, brightness: int = 200) -> Command:
+        """Turn light ON."""
+        return build_light_on(self.table_id, self.device_id, brightness)
+    
+    def off(self) -> Command:
+        """Turn light OFF."""
+        return build_light_off(self.table_id, self.device_id)
+    
+    def restore(self) -> Command:
+        """Restore to last brightness."""
+        return build_light_restore(self.table_id, self.device_id)
+    
+    def set_brightness(self, brightness: int) -> Command:
+        """Set specific brightness (0-255)."""
+        return build_light_on(self.table_id, self.device_id, brightness)
 
 
-def bed_ceiling_off() -> Command:
-    """Turn Bed Ceiling light OFF."""
-    return build_light_off(DeviceInstance.BED_CEILING)
-
-
-def bed_ceiling_dim(brightness: int) -> Command:
-    """Set Bed Ceiling light to specific brightness."""
-    return build_dimmer_command(DeviceInstance.BED_CEILING, brightness)
+# Known devices (to be populated from device discovery)
+# These are placeholders - actual IDs need to be discovered from the device
+KITCHEN_LIGHT = LightDevice("Kitchen", table_id=0x00, device_id=0x21)
+BED_CEILING_LIGHT = LightDevice("Bed Ceiling", table_id=0x00, device_id=0x28)
 
 
 if __name__ == '__main__':
-    # Test command building
     print("OneControl Command Builder")
-    print("=" * 40)
+    print("=" * 50)
     
+    # Test command building
     commands = [
-        ("Kitchen ON", kitchen_on()),
-        ("Kitchen OFF", kitchen_off()),
-        ("Kitchen 50%", kitchen_dim(50)),
-        ("Bed Ceiling ON", bed_ceiling_on()),
-        ("Bed Ceiling OFF", bed_ceiling_off()),
-        ("Toggle Kitchen", build_toggle_command(DeviceInstance.KITCHEN)),
-        ("Status Query", build_status_query()),
+        ("Light ON (table=0, id=0x21)", build_light_on(0, 0x21, 200)),
+        ("Light OFF (table=0, id=0x21)", build_light_off(0, 0x21)),
+        ("Light RESTORE (table=0, id=0x21)", build_light_restore(0, 0x21)),
+        ("Get Devices", build_get_devices()),
+        ("Get Metadata", build_get_devices_metadata()),
     ]
     
     for name, cmd in commands:
         print(f"\n{name}:")
-        print(f"  Raw:    {cmd.data.hex()}")
-        print(f"  Framed: {cmd.frame().hex()}")
+        print(f"  Raw:     {cmd.raw_data.hex()}")
+        print(f"  Encoded: {cmd.encode().hex()}")
+    
+    print("\n" + "=" * 50)
+    print("\nUsing LightDevice convenience class:")
+    
+    print(f"\nKitchen ON:  {KITCHEN_LIGHT.on().encode().hex()}")
+    print(f"Kitchen OFF: {KITCHEN_LIGHT.off().encode().hex()}")
+    print(f"Kitchen 50%: {KITCHEN_LIGHT.set_brightness(128).encode().hex()}")

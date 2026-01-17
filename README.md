@@ -71,122 +71,124 @@ See [`rvc/dgn.py`](rvc/dgn.py) for the complete list.
 
 ### Lippert TCP Protocol (Port 6969)
 
-The TCP protocol uses a **proprietary Lippert framing**, not raw RV-C CAN frames. Based on extensive traffic analysis:
+The TCP protocol uses **COBS (Consistent Overhead Byte Stuffing)** framing with **CRC-8** checksum, wrapping **MyRvLink** commands.
 
-#### Message Structure
+#### Protocol Stack
 
 ```
-[00] [Type] [Len?] [Magic] [Instance] [Cmd] [Data...] [00]
+[TCP/IP (port 6969)]
+    └── [COBS Framing (0x00 delimiters, 6-bit blocks)]
+        └── [CRC-8 Validation (poly=0x8C reflected, init=0x55)]
+            └── [MyRvLink Command/Event Messages]
 ```
 
-| Byte | Description |
-|------|-------------|
-| `00` | Start delimiter |
-| Type | Message type: `40`, `41`, `43`, `45`, `85`, `C3`, `C5` |
-| Len? | Length marker or sub-type (often `02`) |
-| Magic | Two magic bytes: `80 84`, `80 86`, or `83 dc` |
-| Instance | Device instance ID (1 byte) |
-| Cmd | Command byte (e.g., `11`=status, `42`=set) |
-| Data | Variable length payload |
-| `00` | End delimiter |
+#### COBS Parameters (from decompiled app)
 
-#### Message Types (Observed)
-
-| Type | Direction | Description |
-|------|-----------|-------------|
-| `0x40` | Both | Device state / short status |
-| `0x41` | Both | Device registration / node info |
-| `0x43` | Both | Multi-part messages / queries |
-| `0x45` | Both | Status request (`11`) or Set value (`42`) |
-| `0x85` | Controller→App | Status broadcast |
-| `0xC3` | Controller→App | Configuration data |
-| `0xC5` | Controller→App | Extended status |
-
-#### Example Messages
-
-**Status Poll** (App → Controller):
-```
-00 45 02 80 84 04 11 02 2b 5d 00
-   │     │     │  │  │  └────── Checksum?
-   │     │     │  │  └───────── Status request
-   │     │     │  └──────────── Instance 0x04
-   │     │     └─────────────── Magic bytes
-   │     └───────────────────── Length marker
-   └─────────────────────────── Type 0x45
+```python
+# CobsEncoder(prependStartFrame=true, useCrc=true, frameByte=0, numDataBits=6)
+FRAME_BYTE = 0x00      # Frame delimiter
+NUM_DATA_BITS = 6      # Max 63 data bytes per block
+CRC8_POLY = 0x8C       # Reflected polynomial (CRC-8/MAXIM)
+CRC8_INIT = 0x55       # Initial CRC value
 ```
 
-**Device Registration** (App → Controller):
-```
-00 41 08 41 21 08 1c 88 43 4f af 67 82 02 00 00
-         │        └──────────────────── Device ID
-         └─────────────────────────────── Instance 0x21
-```
+#### MyRvLink Command Structure
 
-**Set Command** (Captured but not yet working):
 ```
-00 45 02 80 84 28 42 02 04 c2 00
-               │  │  │  └────── Value (little-endian)
-               │  │  └───────── Data length
-               │  └──────────── Set command
-               └─────────────── Instance 0x28
+[ClientCommandId (2 bytes, LE)] [CommandType (1 byte)] [Payload...]
 ```
 
-#### Device Instances (Example RV)
+| Field | Size | Description |
+|-------|------|-------------|
+| ClientCommandId | 2 bytes | Incrementing command ID (little-endian) |
+| CommandType | 1 byte | Command type (see MyRvLinkCommandType enum) |
+| Payload | Variable | Command-specific data |
 
-| Instance | Device | Magic Bytes |
-|----------|--------|-------------|
-| `0x04` | System poll target | `83 ac` |
-| `0x28` | Light (toggle type) | `83 ac`, `83 ae` |
-| `0xEB` | Kitchen light | `83 ac` |
-| `0xEC` | System poll target | `83 ac` |
-| `0xF2` | Unknown device | `83 7d` |
+#### Command Types (MyRvLinkCommandType)
 
-#### Multiple Magic Byte Sequences
+| Value | Name | Description |
+|-------|------|-------------|
+| 1 | GetDevices | Request device list |
+| 2 | GetDevicesMetadata | Request device metadata |
+| 64 | ActionSwitch | On/off switch control |
+| 65 | ActionMovement | Movement control (slides, awnings) |
+| 67 | ActionDimmable | Dimmable light control |
+| 68 | ActionRgb | RGB light control |
+| 69 | ActionHvac | HVAC control |
 
-Different operations use different magic bytes:
+#### ActionDimmable Command (Type 67)
 
-| Magic | Usage |
-|-------|-------|
-| `80 84` | Legacy/alternate format |
-| `80 86` | Alternate control format |
-| `83 ac` | Primary polling/status |
-| `83 ae` | Control commands (type 40) |
-| `83 7d` | Device configuration |
-
-#### Observed Command Patterns
-
-**App Polling Sequence** (sent every ~1 second):
 ```
-00 45 02 83 ac 04 11 02 2b c2 00   # Poll instance 0x04
-00 43 01 06 eb 01 51 00            # Query instance 0xEB
+[CmdId (2B LE)] [67] [TableId] [DeviceId] [LightCommand (8 bytes)]
 ```
 
-**Device Registration** (sent on connect):
+**LightCommand Structure:**
 ```
-00 41 08 41 eb 08 1c 88 43 4f af 67 82 79 00
-         │        └──────────────────────── Device ID (unique per app)
-         └───────────────────────────────── Instance
-```
-
-**Control Command Candidates** (captured but not working):
-```
-00 45 02 83 ac 28 42 02 04 5d 00   # SET for instance 0x28, value 0x045d
-00 40 05 83 ae 28 01 fd 00         # Type 40 control, value 0xfd
-00 45 06 03 28 81 ff 81 95 01 47 00  # Extended format
+Byte 0: Command (0=Off, 1=On, 127=Restore)
+Byte 1: MaxBrightness (0-255)
+Byte 2: Duration
+Bytes 3-4: CycleTime1 (big-endian)
+Bytes 5-6: CycleTime2 (big-endian)
+Byte 7: Reserved (0x00)
 ```
 
-> ⚠️ **TCP Control Not Working** - After extensive testing, the TCP interface appears to be **read-only** or requires unknown authentication.
+#### Example: Light ON Command
+
+**Raw command (before COBS+CRC):**
+```
+00 00    # ClientCommandId = 0 (little-endian)
+43       # CommandType = ActionDimmable (67)
+00       # DeviceTableId
+21       # DeviceId (e.g., Kitchen light)
+01       # Command = On
+C8       # MaxBrightness = 200 (~78%)
+00       # Duration = 0
+00 00    # CycleTime1 = 0
+00 00    # CycleTime2 = 0
+00       # Reserved
+```
+
+**After COBS+CRC encoding:**
+```
+00 80 41 43 C3 21 01 C8 C0 01 6B 00
+│                              │
+└── Frame start                └── Frame end
+```
+
+#### Example: Light OFF Command
+
+**Raw command:**
+```
+01 00 43 00 21 00 00 00 00 00 00 00 00
+```
+
+**Encoded:**
+```
+00 41 01 43 C1 21 C0 80 01 2E 00
+```
+
+#### DimmableLightCommand Values
+
+| Value | Name | Description |
+|-------|------|-------------|
+| 0 | Off | Turn light off |
+| 1 | On | Turn on to MaxBrightness |
+| 2 | Blink | Blink mode |
+| 3 | Swell | Pulse/swell mode |
+| 4 | Settings | Configure settings |
+| 127 | Restore | Restore to last brightness |
+
+> ⚠️ **Testing Required** - The protocol has been reverse-engineered from app decompilation but needs testing against real hardware.
 > 
-> **Evidence:**
-> - Commands receive valid responses (status broadcasts continue)
-> - Response shows current state, not changed state
-> - App traffic captured but exact replay doesn't actuate
-> - No visible difference between our commands and app commands
+> **What we know:**
+> - COBS framing with CRC-8 (poly=0x8C, init=0x55) ✓
+> - MyRvLink command structure ✓
+> - ActionDimmable command format ✓
 > 
-> **Likely Cause:** The TCP interface is for **monitoring only**. Actual control probably happens via:
-> - Direct CAN bus commands
-> - Bluetooth (though app works with BT off, so unlikely)
-> - Unknown authentication/session mechanism
+> **What we need to discover:**
+> - Correct DeviceTableId and DeviceId values for your RV
+> - Device discovery (GetDevices command response format)
+> - Event/status message parsing
 
 ### Alternative: CAN Bus Direct Access
 
@@ -348,45 +350,104 @@ Contributions welcome! Areas that need work:
 - WiFi connection to OneControl AP (`MyRV_*` network)
 - TCP connection to port 6969
 - Receiving continuous status broadcasts
-- Identifying device instances from traffic
+- Identifying device instances from traffic (Kitchen=`0x28`, etc.)
 - Capturing and analyzing app traffic via tcpdump
 - Distinguishing polling vs command messages
 - Phone app works with Bluetooth OFF (confirms WiFi control)
+- **Registration packet exchange** - Controller responds to our registration
+- **CRC-8 calculation verified** - Polynomial 0x8C (reflected), init 0x55
+- **COBS decoding/encoding** - Correctly parse captured messages
 
 ### What Doesn't Work ❌
-- **Any control command format we tried** - 50+ variations tested
-- Exact byte-for-byte replay of captured app commands
-- Different magic byte combinations (`80 84`, `83 ac`, `83 ae`)
-- Type `40`, `43`, `45` command formats
-- Various value encodings (little-endian, big-endian)
+- **Any control command format we tried** - 100+ variations tested
+- Exact byte-for-byte replay of captured app commands (different session)
+- Commands with correct CRC but different session ID
+- Different device addresses (`fe64`, `0x28`, `7d28`, etc.)
 
 ### Key Findings
 
 1. **No cloud traffic** - Phone talks ONLY to `192.168.1.1:6969`, no DNS queries
 2. **Bluetooth not required** - App works with phone BT disabled
-3. **Commands acknowledged** - Controller sends back status, but state unchanged
-4. **Multiple magic bytes** - Different operations use `83 ac`, `83 ae`, `80 84`, etc.
-5. **Device ID in registration** - `43 4f af 67 82` appears to be app's unique ID
-6. **App is Xamarin/.NET** - Decompiled LippertConnect, extracted 430 .NET assemblies
-7. **COBS encoding** - Protocol uses COBS (Consistent Overhead Byte Stuffing) framing
-8. **CRC validation** - CRC-8 or CRC-32 LE checksums used, algorithm still unknown
-9. **Nonce/counter byte** - Commands include a varying byte that affects checksum
+3. **Commands send, no response action** - Controller sends back status stream, but devices unchanged
+4. **App is Xamarin/.NET** - Decompiled LippertConnect, extracted 430 .NET assemblies
+5. **COBS encoding VERIFIED** - Matches decompiled `CobsEncoder(true, true, 0, 6)`
+6. **CRC-8/MAXIM VERIFIED** - Calculated CRC matches captured packets exactly
 
-### Tested Command Formats
+### Protocol Deep Dive (New!)
 
-| Format | Example | Result |
-|--------|---------|--------|
-| `45/42 SET` | `00 45 02 83 ac 28 42 02 04 5d 00` | Response, no change |
-| `43/06 QUERY` | `00 43 01 06 eb 01 51 00` | Response, no change |
-| `40/05 CTRL` | `00 40 05 83 ae 28 01 fd 00` | Response, no change |
-| `45/06 EXT` | `00 45 06 03 28 81 ff 81 95 01 47 00` | Response, no change |
+#### Registration Sequence
+```
+App → Controller: 00 81 08 09 [SessionID] 1c 88 43 4f af 67 82 [CRC] 00
+Controller → App: 00 81 18 09 [SessionID] 1c 88 43 4f af 67 82 [CRC] 00
+```
+- `81` = Registration message type
+- `08`/`18` = Request/Response indicator
+- `434faf67` = Appears to be a device/app identifier (consistent across sessions)
+- Session ID (e.g., `9d`, `30`, `32`) changes per connection
 
-### Theories (Updated)
+#### Toggle Command Format (COBS-decoded)
+```
+Raw payload: 08 07 [SS] [SS] fe 64 86 00 01 00 00
+            │  │    │    │   │    │  │   │
+            │  │    │    │   │    │  │   └─ ON command (01=On, 02=Off?)
+            │  │    │    │   │    │  └───── Zero byte
+            │  │    │    │   │    └──────── Counter/sequence (86, 87, 88...)
+            │  │    │    │   └───────────── Device address (fe64)
+            │  │    │    └────────────────── Session ID (repeated)
+            │  │    └─────────────────────── Session ID
+            │  └──────────────────────────── Message type (07)
+            └─────────────────────────────── Header byte (08)
+```
 
-1. ~~Missing session token~~ - Registration appears to work
-2. **CAN-only control** - TCP may be read-only, control via CAN bus
-3. **Checksum/nonce** - Values like `2b c2`, `51`, `fd` may be computed
-4. **App signing** - Commands may be cryptographically signed
+COBS-encoded over wire:
+```
+00 47 08 07 [SS] [SS] fe 64 86 81 01 01 [CRC] 00
+   │
+   └── Code byte: 7 data bytes + 1 zero (7 + 64 = 71 = 0x47)
+```
+
+#### CRC Verification Success ✅
+```python
+# Captured: 47 08 07 30 30 fe 64 86 81 01 01 a5
+# Decoded raw: 08 07 30 30 fe 64 86 00 01 00 00
+# Calculated CRC: 0xA5
+# Captured CRC: 0xA5  ← MATCH!
+```
+
+### Remaining Mysteries
+
+1. **Why don't our commands work?**
+   - We can register, we can calculate correct CRC
+   - But toggle commands with our session ID don't actuate devices
+   - Possible: Device address `fe64` is session/device specific
+
+2. **Device address discovery**
+   - Captured toggle uses `fe 64` - what does this map to?
+   - Kitchen light is instance `0x28` but toggle doesn't use `28` directly
+   - Need to understand the `fe XX` address format
+
+3. **Second session phenomenon**
+   - First connection (port 60477) gets session `32`
+   - App opens second connection (port 60480) gets session `30`
+   - Toggle commands go on second connection with `30`
+   - Maybe we need multiple connections?
+
+### Tested Command Formats (Expanded)
+
+| Format | Raw Payload | Wire Bytes | Result |
+|--------|-------------|------------|--------|
+| Toggle (session 30) | `08 07 30 30 fe 64 86 00 01 00 00` | `00 47 08 07 30 30 fe 64 86 81 01 01 a5 00` | App works |
+| Toggle (session 9d) | `08 07 9d 9d fe 64 86 00 01 00 00` | `00 47 08 07 9d 9d fe 64 86 81 01 01 78 00` | No effect |
+| ActionSwitch | `01 00 40 00 01 28` | COBS encoded | No effect |
+| ActionDimmable | `00 00 43 00 21 01 c8 00 00 00 00 00 00` | COBS encoded | No effect |
+| Registration | `09 9d 1c 88 43 4f af 67 82` | `00 81 08 09 9d...71 00` | Response! |
+
+### Next Steps
+
+1. **Capture full multi-connection session** - App may use separate connections for control vs. status
+2. **Understand `fe XX` addressing** - How does `fe 64` relate to device `0x28` (Kitchen)?
+3. **Try CAN bus direct** - TCP may truly be read-only; CAN might be required for control
+4. **iOS app decompilation** - Android app may have obfuscated secrets; try iOS
 
 ## License
 

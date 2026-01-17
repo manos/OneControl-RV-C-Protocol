@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>OneControl.Direct.MyRvLinkTcpIp</AssemblyName>
+    <GenerateAssemblyInfo>False</GenerateAssemblyInfo>
+    <TargetFramework>netcoreapp8.0</TargetFramework>
+  </PropertyGroup>
+  <PropertyGroup>
+    <LangVersion>12.0</LangVersion>
+    <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <PropertyGroup />
+  <ItemGroup />
+  <ItemGroup>
+    <Reference Include="OneControl.Direct.MyRvLink" />
+    <Reference Include="IDS.Portable.LogicalDevices" />
+    <Reference Include="System.Net.Sockets" />
+    <Reference Include="ids.portable.common" />
+    <Reference Include="System.Collections" />
+    <Reference Include="System.Threading" />
+    <Reference Include="System.Linq" />
+  </ItemGroup>
+</Project>

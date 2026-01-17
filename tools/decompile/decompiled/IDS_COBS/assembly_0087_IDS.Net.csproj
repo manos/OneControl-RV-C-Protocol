@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <AssemblyName>ids.portable.common</AssemblyName>
+    <GenerateAssemblyInfo>False</GenerateAssemblyInfo>
+    <TargetFramework>netcoreapp8.0</TargetFramework>
+  </PropertyGroup>
+  <PropertyGroup>
+    <LangVersion>12.0</LangVersion>
+    <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <PropertyGroup />
+  <ItemGroup />
+  <ItemGroup>
+    <Reference Include="System.ObjectModel" />
+    <Reference Include="System.Collections" />
+    <Reference Include="System.Collections.Concurrent" />
+    <Reference Include="System.Security.Cryptography" />
+    <Reference Include="System.Net.Primitives" />
+    <Reference Include="Serilog" />
+    <Reference Include="Newtonsoft.Json" />
+    <Reference Include="System.Threading" />
+    <Reference Include="System.ComponentModel.Primitives" />
+    <Reference Include="System.Linq" />
+    <Reference Include="System.Threading.Thread" />
+    <Reference Include="System.Net.NameResolution" />
+  </ItemGroup>
+</Project>

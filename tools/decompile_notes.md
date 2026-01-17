@@ -9,24 +9,97 @@ Reverse engineering notes for the LippertConnect Android app.
 - **Min SDK**: Android 9.0+
 - **Size**: ~145MB
 
-## Key Discovery: COBS Framing!
+## Key Discovery: COBS Framing with CRC-8!
 
-**The TCP protocol uses COBS (Consistent Overhead Byte Stuffing) encoding!**
+**The TCP protocol uses COBS (Consistent Overhead Byte Stuffing) encoding with CRC-8 checksum!**
 
-This explains the `0x00` delimiters we saw in tcpdump captures. COBS is a framing protocol that:
-- Uses `0x00` as frame delimiters
-- Encodes data to eliminate `0x00` bytes within the payload
-- Adds minimal overhead (1 byte per 254 bytes)
+### COBS Parameters (from decompiled `DirectConnectionMyRvLinkTcpIp.cs`)
+
+```csharp
+CobsEncoder = new CobsEncoder(true, true, (byte)0, 6);
+CobsDecoder = new CobsDecoder(true, (byte)0, 6);
+```
+
+- `prependStartFrame = true` - Frames start with 0x00
+- `useCrc = true` - CRC-8 appended before COBS encoding
+- `frameByte = 0` - Frame delimiter is 0x00
+- `numDataBits = 6` - Max 63 data bytes per COBS block
+
+### CRC-8 Algorithm (from decompiled `Crc8.cs`)
+
+- **Polynomial**: 0x8C (reflected) - This is CRC-8/MAXIM (1-Wire/DOW CRC)
+- **Initial Value**: 0x55
+- **Lookup Table**: Standard table for poly 0x8C reflected
+
+```python
+# Python implementation
+CRC8_TABLE = [0x00, 0x5e, 0xbc, 0xe2, ...]  # 256 entries
+def crc8(data, init=0x55):
+    crc = init
+    for byte in data:
+        crc = CRC8_TABLE[(crc ^ byte) & 0xFF]
+    return crc
+```
 
 ### Protocol Stack
 
 ```
 [TCP/IP (port 6969)]
-    └── [COBS Framing (0x00 delimiters)]
-        └── [CRC Validation (CRC-8 or CRC-32)]
+    └── [COBS Framing (0x00 delimiters, 6-bit blocks)]
+        └── [CRC-8 Validation (poly=0x8C, init=0x55)]
             └── [MyRvLink Command/Event Messages]
-                └── [IDS CAN / RV-C Data]
+                └── [RV-C / Device Data]
 ```
+
+## Command Format (from decompiled `MyRvLinkCommand.cs`)
+
+### Base Command Structure
+
+```
+[ClientCommandId (2 bytes, LE)] [CommandType (1 byte)] [Payload...]
+```
+
+### ActionDimmable Command (CommandType = 67)
+
+```
+[ClientCommandId (2 bytes, LE)] [67] [DeviceTableId] [DeviceId] [LightCommand (8 bytes)]
+```
+
+### LightCommand Structure (from `LogicalDeviceLightDimmableCommand.cs`)
+
+```
+Byte 0: Command (DimmableLightCommand enum)
+Byte 1: MaxBrightness (0-255)
+Byte 2: Duration
+Byte 3: CycleTime1 MSB
+Byte 4: CycleTime1 LSB
+Byte 5: CycleTime2 MSB
+Byte 6: CycleTime2 LSB
+Byte 7: Undefined (0x00)
+```
+
+### DimmableLightCommand Enum
+
+| Value | Name | Description |
+|-------|------|-------------|
+| 0 | Off | Turn light off |
+| 1 | On | Turn light on to MaxBrightness |
+| 2 | Blink | Blink mode |
+| 3 | Swell | Swell/pulse mode |
+| 4 | Settings | Configure settings |
+| 127 | Restore | Restore to last brightness |
+
+### MyRvLinkCommandType Enum
+
+| Value | Name |
+|-------|------|
+| 1 | GetDevices |
+| 2 | GetDevicesMetadata |
+| 64 | ActionSwitch |
+| 65 | ActionMovement |
+| 67 | ActionDimmable |
+| 68 | ActionRgb |
+| 69 | ActionHvac |
 
 ## Findings
 
@@ -50,110 +123,160 @@ LippertConnect.apk (split APK bundle)
 └── config.mdpi.apk                  # Medium DPI resources
 ```
 
-### Key .NET DLLs Found
+### Key .NET DLLs Decompiled
 
 | Extracted DLL | Original Name | Purpose |
 |---------------|---------------|---------|
 | `d.dll` | `OneControl.Direct.MyRvLinkTcpIp.dll` | **TCP Protocol Implementation!** |
-| `TcpIp.dll` | `OneControl.Direct.RvCloudIoT` | Cloud IoT direct commands |
-| `assembly_0168_P.dll` | MyRvLink events/commands | Event definitions |
-| `assembly_0169_P.dll` | MyRvLink COBS | COBS stream handling |
-| `assembly_0087_IDS.Net.dll` | `IDS.Portable.Common` | COBS base, CRC |
-| `assembly_0085_IDS.Net.dll` | IDS CAN connection | TCP/WiFi/BLE connections |
-| `Gateway.dll` | Device gateway | Logical device handling |
+| `assembly_0087_IDS.Net.dll` | `IDS.Portable.Common` | COBS, CRC-8, utilities |
+| `assembly_0165_P.dll` | `OneControl.Devices` | Device commands (LightDimmable, etc.) |
+| `assembly_0168_P.dll` | `OneControl.Direct.MyRvLink` | MyRvLink commands/events |
 
-### Key Methods Found
+### Key Decompiled Files
 
-| Method | Location | Purpose |
-|--------|----------|---------|
-| `SendCommandRawAsync` | d.dll | **Send raw TCP commands** |
-| `WriteDataAsync` | d.dll | Write to TCP stream |
-| `ConnectAsync` | d.dll | TCP connection |
-| `SendDirectCommandLightDimmable` | assembly_0168 | Dimmer control |
-| `SendDirectCommandRelayBasicSwitch` | assembly_0168 | Switch control |
-| `SendDirectCommandLightRgb` | assembly_0168 | RGB light control |
-| `TryDecodeByte` | assembly_0087 | COBS decode |
-| `AppendValueByte` | assembly_0087 | COBS encode |
+| File | Key Classes |
+|------|-------------|
+| `DirectConnectionMyRvLinkTcpIp.cs` | CobsEncoder/Decoder init, TCP connection |
+| `Crc8.cs` | CRC-8 lookup table, Calculate method |
+| `CobsEncoder.cs` | COBS encoding algorithm |
+| `CobsDecoder.cs` | COBS decoding algorithm |
+| `MyRvLinkCommandActionDimmable.cs` | Dimmable light command structure |
+| `LogicalDeviceLightDimmableCommand.cs` | Light command data format |
 
-### Key Classes Found
+## Example Commands
 
-| Class | DLL | Purpose |
-|-------|-----|---------|
-| `DirectConnectionMyRvLinkTcpIp` | d.dll | Main TCP connection handler |
-| `CobsEncoder` | d.dll | COBS encoding |
-| `CobsDecoder` | d.dll | COBS decoding |
-| `CobsStream` | assembly_0087/d.dll | COBS stream wrapper |
-| `Crc32`, `Crc8` | assembly_0087 | CRC validation |
-| `MyRvLinkEventDevicesSubByte` | assembly_0168 | Sub-byte event parsing |
-| `MyRvLinkRelayBasicLatchingStatusType1` | assembly_0168 | Relay status |
+### Light ON (100%)
 
-### COBS Framing Details
-
-From `assembly_0087_IDS.Net.dll`:
-- `FrameByteCountLsb` - Frame has length byte (LSB)
-- `PrependStartFrame` - Frames may have start marker
-- `DefaultFrameByte` - Default frame delimiter byte
-- `MaxCobsSourceBufferSize` - Max buffer size
-
-### CRC/Checksum Algorithm
-
-From `assembly_0087_IDS.Net.dll`:
-- **CRC-32 LE** (Little Endian) - `Crc32Le`, `Crc32_le`
-- **CRC-8** - for shorter messages
-- `UseCrc` flag - CRC can be optional
-- `payloadCrc`, `computedCrc` - CRC validation
-- `CobsCrcMismatchException` - thrown on CRC error
-
-### Command Types (from assembly_0168)
-
-| Command | Purpose |
-|---------|---------|
-| `LogicalDeviceLightDimmableCommand` | Dimmer control |
-| `LogicalDeviceLightRgbCommand` | RGB light |
-| `LogicalDeviceClimateZoneCommand` | HVAC zone |
-| `LogicalDeviceLevelerCommandType1` | Leveler |
-| `LogicalDeviceRelayBasicStatusType1` | Relay status |
-| `MyRvLinkRelayBasicLatchingStatusType1` | Latching relay |
-| `MyRvLinkRelayHBridgeMomentaryStatusType1` | H-bridge relay |
-
-### Protocol Constants
-
-| Constant | Value | Purpose |
-|----------|-------|---------|
-| `DefaultPort` | 6969 | TCP port |
-| `ConnectionSendDataTimeMs` | ? | Send timeout |
-| `ConnectionReceiveDataTimeMs` | ? | Receive timeout |
-| `MaxCobsSourceBufferSize` | ? | Max message size |
-
-## Native Libraries
-
-Check `lib/` folder for `.so` files that might contain:
-- Protocol implementation
-- Encryption routines
-- Checksum calculations
-
-### .so Files Found
-
-| Library | Architecture | Size | Notes |
-|---------|--------------|------|-------|
-| (TBD) | | | |
-
-## Interesting Strings
-
+Raw command (before COBS):
 ```
-(Extracted strings that might be relevant)
+00 00  # ClientCommandId = 0
+43     # CommandType = ActionDimmable (67)
+00     # DeviceTableId
+21     # DeviceId (e.g., Kitchen)
+01     # Command = On
+C8     # MaxBrightness = 200
+00     # Duration
+00 00  # CycleTime1
+00 00  # CycleTime2
+00     # Undefined
 ```
 
-## Next Steps
+After COBS+CRC encoding:
+```
+00 80 41 43 C3 21 01 C8 C0 01 XX 00
+```
 
-1. [ ] Search for port 6969
-2. [ ] Find socket connection code
-3. [ ] Locate command building functions
-4. [ ] Identify checksum algorithm
-5. [ ] Check for native crypto
-6. [ ] Document message format
+### Light OFF
+
+Raw command:
+```
+01 00  # ClientCommandId = 1
+43     # CommandType = ActionDimmable
+00     # DeviceTableId
+21     # DeviceId
+00     # Command = Off
+00 00 00 00 00 00 00  # Rest zeros
+```
+
+## New Discovery: Type 0x47 Toggle Format!
+
+### From Live Traffic Analysis
+
+Captured toggle commands use type `0x47` (71), NOT the `ActionDimmable` (67) we expected!
+
+#### COBS-Encoded Wire Format
+```
+00 47 08 07 SS SS fe 64 86 81 01 01 CRC 00
+│  │  │  │  │  │  │    │  │  │  │   │
+│  │  │  │  │  │  │    │  │  │  │   └─ CRC-8
+│  │  │  │  │  │  │    │  │  │  └───── Command (01=On, 02=Off?)
+│  │  │  │  │  │  │    │  │  └──────── Code byte (81 = 1 data + 2 zeros)
+│  │  │  │  │  │  │    │  └─────────── Counter (86, 87, 88, 89...)
+│  │  │  │  │  │  │    └────────────── Device address
+│  │  │  │  │  │  └─────────────────── Unknown (fe)
+│  │  │  │  │  └────────────────────── Session ID
+│  │  │  │  └───────────────────────── Session ID (repeated)
+│  │  │  └──────────────────────────── Message subtype? (07)
+│  │  └─────────────────────────────── Code byte (47 = 7 data + 1 zero)
+│  └────────────────────────────────── Frame start
+```
+
+#### COBS-Decoded Raw Payload
+```
+08 07 SS SS fe 64 86 00 01 00 00
+```
+
+### CRC Verification SUCCESS ✅
+
+```python
+# Captured from app (session 0x30):
+captured_wire = "47 08 07 30 30 fe 64 86 81 01 01 a5"
+decoded_raw = "08 07 30 30 fe 64 86 00 01 00 00"
+
+# CRC-8/MAXIM calculation:
+crc8(bytes.fromhex("0807303030fe6486000100 00"), init=0x55) == 0xA5  # ✅ MATCH!
+```
+
+### Registration Packet
+
+```
+# App → Controller (request registration)
+00 81 08 09 SS 1c 88 43 4f af 67 82 CRC 00
+
+# Controller → App (acknowledge registration)  
+00 81 18 09 SS 1c 88 43 4f af 67 82 CRC 00
+```
+
+- `81` = Registration message type
+- `08` / `18` = Request / Response
+- `09` = Length or subtype
+- `SS` = Session ID (assigned by controller)
+- `434faf67` = App/device identifier
+
+### What We Still Don't Know
+
+1. **What is `fe 64`?** - Device address, but how does it map to device ID `0x28`?
+2. **Why doesn't our session work?** - We register OK, but toggle commands fail
+3. **Type 0xC7 variant** - Some toggles use `0xC7` instead of `0x47`
+
+## Implementation Status
+
+- [x] COBS encoder/decoder implemented (`rvc/cobs.py`)
+- [x] CRC-8 with correct polynomial and init value
+- [x] Command builder (`rvc/commands.py`)
+- [x] CRC calculation verified against captured traffic
+- [x] Registration packet exchange working
+- [ ] **CONTROL NOT WORKING** - Commands accepted but devices don't respond
+- [ ] Device discovery (GetDevices command)
+- [ ] Event/status parsing
+
+## Files Created
+
+- `rvc/cobs.py` - COBS encoder/decoder with CRC-8
+- `rvc/commands.py` - Command builder with proper format
+- `tools/decode_capture.py` - TCP capture decoder
+- `tools/extract_assemblies.py` - .NET assembly extractor
+- `tools/decompile/decompiled/` - Decompiled C# source
+
+## Decompilation Commands
+
+```bash
+# Extract assemblies
+python3 tools/extract_assemblies.py
+
+# Decompile with ILSpy
+~/.dotnet/tools/ilspycmd -o output_dir input.dll
+
+# Key DLLs to decompile:
+# - d.dll (MyRvLinkTcpIp)
+# - assembly_0087_IDS.Net.dll (COBS/CRC)
+# - assembly_0165_P.dll (Devices)
+# - assembly_0168_P.dll (MyRvLink)
+```
 
 ## Resources
 
 - JADX GUI: `jadx-gui tools/decompile/LippertConnect.apk`
 - Output folder: `tools/decompile/output/`
+- Extracted DLLs: `tools/decompile/extracted_dlls/`
+- Decompiled C#: `tools/decompile/decompiled/`
