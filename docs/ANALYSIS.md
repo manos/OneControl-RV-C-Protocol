@@ -278,12 +278,50 @@ async def leveler_retract(host: str = DEFAULT_HOST) -> bool:
 - Uses **frame type 0x03** (not 0x00)
 - Requires **confirmation press** (Enter) after most commands
 
+## CRITICAL: Function ID Confusion
+
+**WARNING**: Some function IDs use the same toggle protocol but are NOT lights!
+
+### Dangerous Misidentifications Found
+
+| func_id | Name in Enum | Actual Device | Risk |
+|---------|--------------|---------------|------|
+| 105 | "Awning" | Awning MOTOR | ⚠️ Extends/retracts awning |
+| 107 | "Under Cabinet Light" | Unknown | ⛔ Controlled water heater! |
+
+### Safe Light func_ids (confirmed)
+
+Only these should be auto-discovered as lights:
+```
+32, 33, 41, 48, 49, 50, 57, 58, 59, 63, 122
+```
+
+### Why This Happens
+
+The OneControl protocol uses the same command structure for:
+- Latching relays (lights)
+- Momentary H-bridges (motors)
+- Water heater relays
+
+The func_id tells you WHAT it is, but the control protocol is identical.
+**Always verify func_id mappings before toggling unknown devices!**
+
+### Awning Control (for future)
+
+The awning motor (func_id 105) responds to the same toggle protocol:
+- ON (0x01) = Extend
+- OFF (0x00) = Retract
+
+To extend fully, you may need to send repeated "extend" commands (like holding a button).
+
 ## Future Work
 
-- [ ] Generator start/stop control
-- [ ] Leveler control (capture needed)
-- [ ] Home Assistant integration
+- [x] Generator start/stop control ✅
+- [x] Leveler control (button commands) ✅
+- [x] Home Assistant integration ✅
 - [ ] Dimming support
+- [ ] Awning extend/retract control
+- [ ] Slide control
 - [ ] Device confirmation UI during setup
 - [ ] Status polling from broadcasts
 - [ ] "All Lights" master control
