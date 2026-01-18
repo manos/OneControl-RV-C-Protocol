@@ -1,0 +1,330 @@
+"""
+Device type definitions for OneControl RV-C protocol.
+
+The FUNCTION_NAME enum defines all known device types from the decompiled
+LippertConnect app. Each device reports its function name which identifies
+what type of device it is (light, water heater, slide, etc.)
+"""
+
+from enum import IntEnum
+from typing import Set
+
+
+class FunctionName(IntEnum):
+    """
+    Device function names from IDS.Core.IDS_CAN.FUNCTION_NAME.
+    These identify the type/purpose of each device in the RV.
+    """
+    UNKNOWN = 0
+    DIAGNOSTIC_TOOL = 1
+    MYRV_TABLET = 2
+    GAS_WATER_HEATER = 3
+    ELECTRIC_WATER_HEATER = 4
+    WATER_PUMP = 5
+    BATH_VENT = 6
+    LIGHT = 7
+    FLOOD_LIGHT = 8
+    WORK_LIGHT = 9
+    FRONT_BEDROOM_CEILING_LIGHT = 10
+    FRONT_BEDROOM_OVERHEAD_LIGHT = 11
+    FRONT_BEDROOM_VANITY_LIGHT = 12
+    FRONT_BEDROOM_SCONCE_LIGHT = 13
+    FRONT_BEDROOM_LOFT_LIGHT = 14
+    REAR_BEDROOM_CEILING_LIGHT = 15
+    REAR_BEDROOM_OVERHEAD_LIGHT = 16
+    REAR_BEDROOM_VANITY_LIGHT = 17
+    REAR_BEDROOM_SCONCE_LIGHT = 18
+    REAR_BEDROOM_LOFT_LIGHT = 19
+    LOFT_LIGHT = 20
+    FRONT_HALL_LIGHT = 21
+    REAR_HALL_LIGHT = 22
+    FRONT_BATHROOM_LIGHT = 23
+    FRONT_BATHROOM_VANITY_LIGHT = 24
+    FRONT_BATHROOM_CEILING_LIGHT = 25
+    FRONT_BATHROOM_SHOWER_LIGHT = 26
+    FRONT_BATHROOM_SCONCE_LIGHT = 27
+    REAR_BATHROOM_VANITY_LIGHT = 28
+    REAR_BATHROOM_CEILING_LIGHT = 29
+    REAR_BATHROOM_SHOWER_LIGHT = 30
+    REAR_BATHROOM_SCONCE_LIGHT = 31
+    KITCHEN_CEILING_LIGHT = 32
+    KITCHEN_SCONCE_LIGHT = 33
+    KITCHEN_PENDANTS_LIGHT = 34
+    KITCHEN_RANGE_LIGHT = 35
+    KITCHEN_COUNTER_LIGHT = 36
+    KITCHEN_BAR_LIGHT = 37
+    KITCHEN_ISLAND_LIGHT = 38
+    KITCHEN_CHANDELIER_LIGHT = 39
+    KITCHEN_UNDER_CABINET_LIGHT = 40
+    LIVING_ROOM_CEILING_LIGHT = 41
+    LIVING_ROOM_SCONCE_LIGHT = 42
+    LIVING_ROOM_PENDANTS_LIGHT = 43
+    LIVING_ROOM_BAR_LIGHT = 44
+    GARAGE_CEILING_LIGHT = 45
+    GARAGE_CABINET_LIGHT = 46
+    SECURITY_LIGHT = 47
+    PORCH_LIGHT = 48
+    AWNING_LIGHT = 49
+    BATHROOM_LIGHT = 50
+    BATHROOM_VANITY_LIGHT = 51
+    BATHROOM_CEILING_LIGHT = 52
+    BATHROOM_SHOWER_LIGHT = 53
+    BATHROOM_SCONCE_LIGHT = 54
+    HALL_LIGHT = 55
+    BUNK_ROOM_LIGHT = 56
+    BEDROOM_LIGHT = 57
+    LIVING_ROOM_LIGHT = 58
+    KITCHEN_LIGHT = 59
+    LOUNGE_LIGHT = 60
+    CEILING_LIGHT = 61
+    ENTRY_LIGHT = 62
+    BED_CEILING_LIGHT = 63
+    BEDROOM_LAV_LIGHT = 64
+    SHOWER_LIGHT = 65
+    GALLEY_LIGHT = 66
+    FRESH_TANK = 67
+    GREY_TANK = 68
+    BLACK_TANK = 69
+    FUEL_TANK = 70
+    GENERATOR_FUEL_TANK = 71
+    AUXILIARY_FUEL_TANK = 72
+    FRONT_BATH_GREY_TANK = 73
+    FRONT_BATH_FRESH_TANK = 74
+    FRONT_BATH_BLACK_TANK = 75
+    REAR_BATH_GREY_TANK = 76
+    REAR_BATH_FRESH_TANK = 77
+    REAR_BATH_BLACK_TANK = 78
+    MAIN_BATH_GREY_TANK = 79
+    MAIN_BATH_FRESH_TANK = 80
+    MAIN_BATH_BLACK_TANK = 81
+    GALLEY_GREY_TANK = 82
+    GALLEY_FRESH_TANK = 83
+    GALLEY_BLACK_TANK = 84
+    KITCHEN_GREY_TANK = 85
+    KITCHEN_FRESH_TANK = 86
+    KITCHEN_BLACK_TANK = 87
+    LANDING_GEAR = 88
+    FRONT_STABILIZER = 89
+    REAR_STABILIZER = 90
+    TV_LIFT = 91
+    BED_LIFT = 92
+    BATH_VENT_COVER = 93
+    DOOR_LOCK = 94
+    GENERATOR = 95
+    SLIDE = 96
+    MAIN_SLIDE = 97
+    BEDROOM_SLIDE = 98
+    GALLEY_SLIDE = 99
+    KITCHEN_SLIDE = 100
+    CLOSET_SLIDE = 101
+    OPTIONAL_SLIDE = 102
+    DOOR_SIDE_SLIDE = 103
+    OFF_DOOR_SLIDE = 104
+    AWNING = 105
+    LEVEL_UP_LEVELER = 106
+    WATER_TANK_HEATER = 107
+    MYRV_TOUCHSCREEN = 108
+    LEVELER = 109
+    VENT_COVER = 110
+    FRONT_BEDROOM_VENT_COVER = 111
+    BEDROOM_VENT_COVER = 112
+    FRONT_BATHROOM_VENT_COVER = 113
+    MAIN_BATHROOM_VENT_COVER = 114
+    REAR_BATHROOM_VENT_COVER = 115
+    KITCHEN_VENT_COVER = 116
+    LIVING_ROOM_VENT_COVER = 117
+    FOUR_LEG_TRUCK_CAMPER_LEVELER = 118
+    SIX_LEG_HALL_EFFECT_EJ_LEVELER = 119
+    PATIO_LIGHT = 120
+    HUTCH_LIGHT = 121
+    SCARE_LIGHT = 122
+    DINETTE_LIGHT = 123
+    BAR_LIGHT = 124
+    OVERHEAD_LIGHT = 125
+    OVERHEAD_BAR_LIGHT = 126
+    FOYER_LIGHT = 127
+    RAMP_DOOR_LIGHT = 128
+    ENTERTAINMENT_LIGHT = 129
+    REAR_ENTRY_DOOR_LIGHT = 130
+    CEILING_FAN_LIGHT = 131
+    OVERHEAD_FAN_LIGHT = 132
+    BUNK_SLIDE = 133
+    BED_SLIDE = 134
+    WARDROBE_SLIDE = 135
+    ENTERTAINMENT_SLIDE = 136
+    SOFA_SLIDE = 137
+    PATIO_AWNING = 138
+    REAR_AWNING = 139
+    SIDE_AWNING = 140
+    JACKS = 141
+    LEVELER_2 = 142
+    EXTERIOR_LIGHT = 143
+    LOWER_ACCENT_LIGHT = 144
+    UPPER_ACCENT_LIGHT = 145
+    DS_SECURITY_LIGHT = 146
+    ODS_SECURITY_LIGHT = 147
+    SLIDE_IN_SLIDE = 148
+    HITCH_LIGHT = 149
+    CLOCK = 150
+    TV = 151
+    DVD = 152
+    BLU_RAY = 153
+    VCR = 154
+    PVR = 155
+    CABLE = 156
+    SATELLITE = 157
+    AUDIO = 158
+    CD_PLAYER = 159
+    TUNER = 160
+    RADIO = 161
+    SPEAKERS = 162
+    GAME = 163
+    CLOCK_RADIO = 164
+    AUX = 165
+    CLIMATE_ZONE = 166
+    FIREPLACE = 167
+    THERMOSTAT = 168
+    FRONT_CAP_LIGHT = 169
+    STEP_LIGHT = 170
+    DS_FLOOD_LIGHT = 171
+    INTERIOR_LIGHT = 172
+    FRESH_TANK_HEATER = 173
+    GREY_TANK_HEATER = 174
+    BLACK_TANK_HEATER = 175
+    LP_TANK = 176
+    STALL_LIGHT = 177
+    MAIN_LIGHT = 178
+    BATH_LIGHT = 179
+    BUNK_LIGHT = 180
+    BED_LIGHT = 181
+    CABINET_LIGHT = 182
+    NETWORK_BRIDGE = 183
+    ETHERNET_BRIDGE = 184
+    WIFI_BRIDGE = 185
+    IN_TRANSIT_POWER_DISCONNECT = 186
+    LEVEL_UP_UNITY = 187
+    TT_LEVELER = 188
+    TRAVEL_TRAILER_LEVELER = 189
+    FIFTH_WHEEL_LEVELER = 190
+    FUEL_PUMP = 191
+    MAIN_CLIMATE_ZONE = 192
+    BEDROOM_CLIMATE_ZONE = 193
+    GARAGE_CLIMATE_ZONE = 194
+
+
+# Set of all light-related function IDs
+LIGHT_FUNCTION_IDS: Set[int] = {
+    FunctionName.LIGHT,
+    FunctionName.FLOOD_LIGHT,
+    FunctionName.WORK_LIGHT,
+    FunctionName.FRONT_BEDROOM_CEILING_LIGHT,
+    FunctionName.FRONT_BEDROOM_OVERHEAD_LIGHT,
+    FunctionName.FRONT_BEDROOM_VANITY_LIGHT,
+    FunctionName.FRONT_BEDROOM_SCONCE_LIGHT,
+    FunctionName.FRONT_BEDROOM_LOFT_LIGHT,
+    FunctionName.REAR_BEDROOM_CEILING_LIGHT,
+    FunctionName.REAR_BEDROOM_OVERHEAD_LIGHT,
+    FunctionName.REAR_BEDROOM_VANITY_LIGHT,
+    FunctionName.REAR_BEDROOM_SCONCE_LIGHT,
+    FunctionName.REAR_BEDROOM_LOFT_LIGHT,
+    FunctionName.LOFT_LIGHT,
+    FunctionName.FRONT_HALL_LIGHT,
+    FunctionName.REAR_HALL_LIGHT,
+    FunctionName.FRONT_BATHROOM_LIGHT,
+    FunctionName.FRONT_BATHROOM_VANITY_LIGHT,
+    FunctionName.FRONT_BATHROOM_CEILING_LIGHT,
+    FunctionName.FRONT_BATHROOM_SHOWER_LIGHT,
+    FunctionName.FRONT_BATHROOM_SCONCE_LIGHT,
+    FunctionName.REAR_BATHROOM_VANITY_LIGHT,
+    FunctionName.REAR_BATHROOM_CEILING_LIGHT,
+    FunctionName.REAR_BATHROOM_SHOWER_LIGHT,
+    FunctionName.REAR_BATHROOM_SCONCE_LIGHT,
+    FunctionName.KITCHEN_CEILING_LIGHT,
+    FunctionName.KITCHEN_SCONCE_LIGHT,
+    FunctionName.KITCHEN_PENDANTS_LIGHT,
+    FunctionName.KITCHEN_RANGE_LIGHT,
+    FunctionName.KITCHEN_COUNTER_LIGHT,
+    FunctionName.KITCHEN_BAR_LIGHT,
+    FunctionName.KITCHEN_ISLAND_LIGHT,
+    FunctionName.KITCHEN_CHANDELIER_LIGHT,
+    FunctionName.KITCHEN_UNDER_CABINET_LIGHT,
+    FunctionName.LIVING_ROOM_CEILING_LIGHT,
+    FunctionName.LIVING_ROOM_SCONCE_LIGHT,
+    FunctionName.LIVING_ROOM_PENDANTS_LIGHT,
+    FunctionName.LIVING_ROOM_BAR_LIGHT,
+    FunctionName.GARAGE_CEILING_LIGHT,
+    FunctionName.GARAGE_CABINET_LIGHT,
+    FunctionName.SECURITY_LIGHT,
+    FunctionName.PORCH_LIGHT,
+    FunctionName.AWNING_LIGHT,
+    FunctionName.BATHROOM_LIGHT,
+    FunctionName.BATHROOM_VANITY_LIGHT,
+    FunctionName.BATHROOM_CEILING_LIGHT,
+    FunctionName.BATHROOM_SHOWER_LIGHT,
+    FunctionName.BATHROOM_SCONCE_LIGHT,
+    FunctionName.HALL_LIGHT,
+    FunctionName.BUNK_ROOM_LIGHT,
+    FunctionName.BEDROOM_LIGHT,
+    FunctionName.LIVING_ROOM_LIGHT,
+    FunctionName.KITCHEN_LIGHT,
+    FunctionName.LOUNGE_LIGHT,
+    FunctionName.CEILING_LIGHT,
+    FunctionName.ENTRY_LIGHT,
+    FunctionName.BED_CEILING_LIGHT,
+    FunctionName.BEDROOM_LAV_LIGHT,
+    FunctionName.SHOWER_LIGHT,
+    FunctionName.GALLEY_LIGHT,
+    FunctionName.PATIO_LIGHT,
+    FunctionName.HUTCH_LIGHT,
+    FunctionName.SCARE_LIGHT,
+    FunctionName.DINETTE_LIGHT,
+    FunctionName.BAR_LIGHT,
+    FunctionName.OVERHEAD_LIGHT,
+    FunctionName.OVERHEAD_BAR_LIGHT,
+    FunctionName.FOYER_LIGHT,
+    FunctionName.RAMP_DOOR_LIGHT,
+    FunctionName.ENTERTAINMENT_LIGHT,
+    FunctionName.REAR_ENTRY_DOOR_LIGHT,
+    FunctionName.CEILING_FAN_LIGHT,
+    FunctionName.OVERHEAD_FAN_LIGHT,
+    FunctionName.EXTERIOR_LIGHT,
+    FunctionName.LOWER_ACCENT_LIGHT,
+    FunctionName.UPPER_ACCENT_LIGHT,
+    FunctionName.DS_SECURITY_LIGHT,
+    FunctionName.ODS_SECURITY_LIGHT,
+    FunctionName.HITCH_LIGHT,
+    FunctionName.FRONT_CAP_LIGHT,
+    FunctionName.STEP_LIGHT,
+    FunctionName.DS_FLOOD_LIGHT,
+    FunctionName.INTERIOR_LIGHT,
+    FunctionName.STALL_LIGHT,
+    FunctionName.MAIN_LIGHT,
+    FunctionName.BATH_LIGHT,
+    FunctionName.BUNK_LIGHT,
+    FunctionName.BED_LIGHT,
+    FunctionName.CABINET_LIGHT,
+}
+
+
+def is_light(function_id: int) -> bool:
+    """Check if a function ID represents a light device."""
+    return function_id in LIGHT_FUNCTION_IDS
+
+
+def get_function_name(function_id: int) -> str:
+    """Get human-readable name for a function ID."""
+    try:
+        return FunctionName(function_id).name.replace("_", " ").title()
+    except ValueError:
+        return f"Unknown ({function_id})"
+
+
+def get_friendly_name(function_id: int) -> str:
+    """Get a shorter, friendlier name for display."""
+    try:
+        name = FunctionName(function_id).name
+        # Remove common suffixes for cleaner display
+        name = name.replace("_LIGHT", "")
+        return name.replace("_", " ").title()
+    except ValueError:
+        return f"Device {function_id}"
