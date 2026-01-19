@@ -286,8 +286,8 @@ async def leveler_retract(host: str = DEFAULT_HOST) -> bool:
 
 | func_id | Name in Enum | Actual Device | Risk |
 |---------|--------------|---------------|------|
-| 105 | "Awning" | Awning MOTOR | ⚠️ Extends/retracts awning |
-| 107 | "Under Cabinet Light" | Unknown | ⛔ Controlled water heater! |
+| 105 | AWNING | Awning MOTOR | ⚠️ Extends/retracts awning |
+| 107 | WATER_TANK_HEATER | Heating pad under tank | ⛔ NOT a light! |
 
 ### Safe Light func_ids (confirmed)
 
