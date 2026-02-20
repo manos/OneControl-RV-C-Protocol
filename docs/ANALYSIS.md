@@ -314,17 +314,73 @@ The awning motor (func_id 105) responds to the same toggle protocol:
 
 To extend fully, you may need to send repeated "extend" commands (like holding a button).
 
+## Water Heater Control (Gas & Electric)
+
+**Status:** Implemented ✅ (Jan 2026)
+
+Water heaters (both gas and electric) use the **exact same protocol as lights** - they're simple latching relay devices!
+
+### Function IDs
+
+| Type | func_id | Name |
+|------|---------|------|
+| Gas | 3 | Gas Water Heater |
+| Electric | 4 | Electric Water Heater |
+
+### Protocol
+
+Water heaters use the standard latching relay control:
+- **Protocol**: 0x80 (same as lights)
+- **ON value**: 0x01
+- **OFF value**: 0x00
+- **Requires authentication**: Yes (seed/key challenge-response)
+
+### Command Sequence
+
+Same as lights:
+```
+1. Register + Identity
+2. Seed request:  02 80 [conn] [counter] 42 00 04
+3. Wait for seed response
+4. Key transmit:  06 80 [conn] [counter] 43 00 04 [key]
+5. Control:       00 80 [conn+2] [counter] [value]
+```
+
+### Implementation
+
+Since the protocol is identical to lights, the implementation reuses `_control_light()`:
+
+```python
+async def water_heater_on(self, counter: int) -> bool:
+    return await self._control_light(counter, on=True)
+
+async def water_heater_off(self, counter: int) -> bool:
+    return await self._control_light(counter, on=False)
+```
+
+### Safety Notes
+
+⚠️ **WARNING**: Water heaters have safety considerations!
+- **Do not turn on if water tank is empty** - can damage heating element
+- **Gas heaters** may have pilot light or ignition requirements
+- Always verify water level before enabling
+
 ## Future Work
 
 - [x] Generator start/stop control ✅
 - [x] Leveler control (button commands) ✅
 - [x] Home Assistant integration ✅
+- [x] Water heater control (Gas & Electric) ✅
+- [x] Device confirmation UI during setup ✅
+- [ ] Water pump control
 - [ ] Dimming support
-- [ ] Awning extend/retract control
-- [ ] Slide control
-- [ ] Device confirmation UI during setup
+- [ ] Leveler HA integration (protocol done, needs entities)
 - [ ] Status polling from broadcasts
 - [ ] "All Lights" master control
+
+### Dropped Features
+- ~~Awning extend/retract control~~ - Users operate while watching
+- ~~Slide control~~ - Users operate while watching
 
 ## Tools Used
 
