@@ -2,38 +2,42 @@
 
 Reverse-engineered protocol documentation and Python client for **Lippert OneControl** RV systems.
 
-> **Status**: Light control, tank sensors, and generator hour meter working. Auto-discovery available.
+> **Status**: Full device control and sensor reading. Home Assistant integration available via [HACS](https://github.com/manos/HomeAssistant-Lippert-OneControl-Integration).
 
 ## Features
 
 | Feature | Status |
 |---------|--------|
 | **Light Control** | ✅ ON/OFF for all discovered lights |
+| **Generator Control** | ✅ Start/Stop with TEA cipher auth |
+| **Water Heater Control** | ✅ Gas & Electric ON/OFF |
+| **Water Pump Control** | ✅ ON/OFF toggle |
 | **Tank Sensors** | ✅ Fresh, Grey, Black, LP levels |
 | **Battery Voltage** | ✅ 12V system voltage |
 | **Generator Hours** | ✅ Hour meter reading |
-| **Auto-Discovery** | ✅ No packet capture needed |
+| **Generator State** | ✅ Off/Priming/Starting/Running/Stopping |
+| **Status Polling** | ✅ Live relay states from broadcasts |
+| **Auto-Discovery** | ✅ func_id-based, no packet capture needed |
+| **Leveler Control** | 🔧 In progress (protocol decoded, implementation WIP) |
+| **Home Assistant** | ✅ HACS integration (v0.3.0) |
 
 ## Quick Start
 
 ```python
 import asyncio
-from rvc.onecontrol import control_light, LightConfig
+from rvc.onecontrol import OneControlClient
 
-# Define a light using universal values + discovered counter
-MY_LIGHT = LightConfig(
-    name="Kitchen",
-    protocol=0x80,
-    session=0x80,
-    device=0x04,
-    conn=0x40,
-    counter=0x28,  # From auto_discover.py
-)
+client = OneControlClient("192.168.1.1")
 
 async def main():
-    await control_light(MY_LIGHT, on=True)
+    # Discover all devices (keyed by func_id)
+    devices = await client.discover_devices()
+    print(devices)
+
+    # Control a light (counter resolved dynamically)
+    await client.light_on(counter=0x28)
     await asyncio.sleep(2)
-    await control_light(MY_LIGHT, on=False)
+    await client.light_off(counter=0x28)
 
 asyncio.run(main())
 ```
@@ -41,7 +45,7 @@ asyncio.run(main())
 ## Installation
 
 ```bash
-git clone https://github.com/your-repo/OneControl-RV-C-Protocol.git
+git clone https://github.com/manos/OneControl-RV-C-Protocol.git
 cd OneControl-RV-C-Protocol
 pip install -e .
 ```
@@ -57,65 +61,95 @@ python tools/auto_discover.py
 Output example:
 ```
 Discovered devices:
-  Awning Light                   counter=0x15
-  Bed Ceiling Light              counter=0xFB
-  Kitchen Ceiling Light          counter=0x28
-  Living Room Ceiling Light      counter=0x77
-  Porch Light                    counter=0xCF
-  Scare Light                    counter=0x86
+  Lights:
+    func_id=57  Bedroom Light
+    func_id=63  Bed Ceiling Light
+    func_id=32  Kitchen Ceiling Light
+    func_id=41  Living Room Ceiling Light
+    func_id=48  Porch Light
+    func_id=122 Scare Light
+  Tanks:
+    func_id=67  Fresh Tank
+    func_id=68  Grey Tank
+    func_id=69  Black Tank
+    func_id=70  LP Tank
+  Water Heaters:
+    func_id=3   Gas Water Heater
+    func_id=4   Electric Water Heater
+  Water Pump:
+    func_id=5   Water Pump
+  Generator:
+    func_id=95  Generator
 ```
+
+## Key Concept: func_id vs Counter
+
+Devices are identified by two values:
+
+- **func_id** (stable): Permanent device type identifier from firmware. Used as the primary key for all device references. Examples: `57` = Bedroom Light, `95` = Generator.
+- **counter** (volatile): Session address assigned by the controller. Changes on reboot. Resolved dynamically at runtime from `0x08 0x02` registration broadcasts.
+
+The integration and discovery tools use `func_id` as the stable identifier and resolve the current `counter` at command time.
 
 ## Usage
 
 ### Control Lights
 
 ```python
-from rvc.onecontrol import control_light, LightConfig
+from rvc.onecontrol import OneControlClient
 
-# Universal values work for all lights
-light = LightConfig(
-    name="My Light",
-    protocol=0x80,
-    session=0x80,
-    device=0x04,
-    conn=0x40,
-    counter=0xXX,  # From discovery
-)
+client = OneControlClient("192.168.1.1")
 
-await control_light(light, on=True)
-await control_light(light, on=False)
+# Counter is the current session address (from discovery or live device_map)
+await client.light_on(counter=0x28)
+await client.light_off(counter=0x28)
 ```
 
-### Read Tank Levels
+### Control Water Heater
 
 ```python
-from rvc.onecontrol import read_tank_levels
-
-levels = await read_tank_levels()
-print(f"Fresh: {levels.get('Fresh Tank', 'N/A')}%")
-print(f"Grey: {levels.get('Grey Tank', 'N/A')}%")
-print(f"Black: {levels.get('Black Tank', 'N/A')}%")
-print(f"LP: {levels.get('LP Tank', 'N/A')}%")
+await client.water_heater_on(counter=0x15)
+await client.water_heater_off(counter=0x15)
 ```
 
-### Read Battery Voltage
+### Control Water Pump
 
 ```python
-from rvc.onecontrol import read_battery_voltage
-
-voltage = await read_battery_voltage()
-if voltage:
-    print(f"Battery: {voltage:.2f}V")
+await client.water_pump_on(counter=0x42)
+await client.water_pump_off(counter=0x42)
 ```
 
-### Read Generator Hours
+### Control Generator
 
 ```python
-from rvc.onecontrol import read_generator_hours
+await client.generator_on(counter=0x24)
+await client.generator_off(counter=0x24)
+```
 
-hours = await read_generator_hours()
-if hours:
-    print(f"Generator: {hours:.1f} hours")
+### Read All Sensors (Single Connection)
+
+```python
+data = await client.read_all_sensors(duration=3.0)
+
+# Tank levels
+for counter, level in data["tanks"].items():
+    print(f"Tank {counter:#04x}: {level}%")
+
+# Battery voltage
+if data["battery_voltage"]:
+    print(f"Battery: {data['battery_voltage']:.2f}V")
+
+# Generator
+if data["generator_hours"]:
+    print(f"Generator: {data['generator_hours']:.1f} hours")
+print(f"Generator state: {data['generator_state']}")
+
+# Relay states (lights, water heaters, water pumps)
+for counter, is_on in data["relay_states"].items():
+    print(f"Relay {counter:#04x}: {'ON' if is_on else 'OFF'}")
+
+# Live func_id -> counter map (refreshed every read)
+print(f"Device map: {data['device_map']}")
 ```
 
 ## Network Setup
@@ -137,53 +171,85 @@ Gateway:  192.168.1.1 (TCP port 6969)
                                                 │ CAN Bus
                                        ┌────────┴─────────┐
                                        │  RV-C Network    │
-                                       │  (Lights, HVAC)  │
+                                       │  (Lights, HVAC,  │
+                                       │   Generator, etc)│
                                        └──────────────────┘
 ```
 
 ## Protocol Overview
 
-Each control command requires:
-1. Fresh TCP connection
-2. Session registration
+### Lights, Water Heaters, Water Pumps (Latching Relay)
+
+Each ON/OFF command requires:
+1. Fresh TCP connection to port 6969
+2. Session registration (`0x01` + `0x08`)
 3. Seed/key authentication (TEA cipher)
-4. Control command
+4. Control command (`0x00` frame)
 5. Connection close
 
+### Generator (Different Protocol!)
+
+Same auth flow but uses protocol `0x81` instead of `0x80`, frame type `0x01` instead of `0x00`, and different ON/OFF values (`0x02`/`0x01`).
+
+### Leveler (No Auth)
+
+Uses button-press simulation via `0x03` frames. No seed/key authentication required. Requires a persistent TCP session with keepalives.
+
 See [docs/PROTOCOL.md](docs/PROTOCOL.md) for full technical details.
+
+## Home Assistant Integration
+
+A full Home Assistant custom component is available:
+
+**[HomeAssistant-Lippert-OneControl-Integration](https://github.com/manos/HomeAssistant-Lippert-OneControl-Integration)**
+
+- Install via HACS (custom repository)
+- Auto-discovers all devices
+- Uses `func_id`-based addressing (survives controller reboots)
+- Supports: lights, generator, water heaters, water pump, tank sensors, battery voltage
 
 ## Project Structure
 
 ```
 OneControl-RV-C-Protocol/
 ├── rvc/
-│   ├── onecontrol.py      # Main client - USE THIS
-│   └── cobs.py            # COBS encoding
+│   ├── onecontrol.py      # Main client (OneControlClient class)
+│   ├── protocol.py        # COBS encoding, CRC-8, TEA cipher
+│   ├── device_names.py    # func_id → human-readable name mapping
+│   └── __init__.py
 ├── tools/
-│   └── auto_discover.py   # Device discovery
+│   ├── auto_discover.py   # Device discovery tool
+│   ├── device_analyzer.py # Packet analysis
+│   ├── identify_device.py # Device identification
+│   └── devices.json       # Known device database
+├── examples/
+│   ├── basic_usage.py     # Simple control examples
+│   └── monitor.py         # Live monitoring
 ├── docs/
-│   ├── PROTOCOL.md        # Technical protocol docs
+│   ├── PROTOCOL.md        # Technical protocol specification
 │   └── ANALYSIS.md        # Reverse-engineering notes
-└── captures/              # Packet captures (reference)
+├── captures/              # Reference packet captures
+└── LICENSE
 ```
 
 ## Safety Warning
 
-⚠️ **Use caution with non-light devices!**
+**Use caution with non-light devices!**
 
 - **Slides/Awnings** - Can hit objects or people
 - **Water Heater** - Fire hazard if tank is empty
-- **Jacks/Levelers** - Can cause damage or injury
+- **Water Pump** - Can burn out without water supply
+- **Jacks/Levelers** - Can cause damage or injury (requires ACC power + parking brake)
 - **Generator** - Fuel and safety concerns
 
 Always verify device names and confirm safe conditions before actuating.
 
 ## Future Work
 
-- [ ] Home Assistant integration
+- [ ] Leveler HA entities (protocol decoded, session management WIP)
 - [ ] Dimming support
-- [ ] Status polling
-- [ ] Generator start/stop control
+- [ ] "All Lights" master control
+- [ ] Awning extend/retract (protocol known, safety concerns)
 
 ## Acknowledgments
 

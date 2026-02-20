@@ -10,23 +10,27 @@ Successfully reverse-engineered the TCP protocol for controlling Lippert OneCont
 - ✅ TEA cipher authentication (seed/key challenge-response)
 - ✅ Light control (ON/OFF)
 - ✅ Tank sensor reading
+- ✅ Battery voltage reading
 - ✅ Generator hour meter reading
-- ✅ Auto-discovery (no packet capture needed!)
-- ✅ Generator start/stop (cracked Jan 18, 2026!)
-- ✅ Leveler control (button commands, no auth needed)
+- ✅ Generator start/stop control (cracked Jan 18, 2026!)
+- ✅ Water heater control (Gas & Electric)
+- ✅ Water pump control
+- ✅ Relay status polling (live ON/OFF state from broadcasts)
+- ✅ Auto-discovery via func_id (no packet capture needed!)
+- ✅ Home Assistant integration (v0.3.0 via HACS)
+- 🔧 Leveler control (protocol decoded, session management WIP)
 
 ## Key Discoveries
 
 ### 1. Universal Control Values
 
-The biggest breakthrough: these values work for ALL devices:
+The biggest breakthrough: these values work for ALL latching relay devices (lights, water heaters, water pumps):
 
 ```python
 PROTOCOL = 0x80
 SESSION  = 0x80
 CONN     = 0x40
 DEVICE   = 0x04
-# Only the COUNTER is device-specific
 ```
 
 ### 2. Authentication Per Command
@@ -37,89 +41,104 @@ Each ON or OFF command requires fresh authentication. You cannot reuse a seed/ke
 
 Regardless of which protocol you request (0x80, 0x82, 0x83), the seed response always comes back on Protocol 0x80.
 
-### 4. Counter is Fixed
+### 4. Counter is VOLATILE (Critical Bug Fix!)
 
-The counter byte does NOT increment during a command sequence. It stays fixed for the device.
+**CORRECTED**: Early analysis assumed counters were fixed per device. This was WRONG and caused a critical production bug where lights stopped responding after a controller reboot.
 
-## Confirmed Working Devices
+**Counter values are session addresses assigned by the controller and can change on any reboot.** The stable identifier is `func_id` (from device firmware), which never changes.
 
-| Device | Counter | Notes |
-|--------|---------|-------|
-| Kitchen Ceiling Light | 0x28 | First device cracked |
-| Living Room Ceiling | 0x77 | Working |
-| Bed Ceiling Light | 0xFB | Working |
-| Porch Light | 0xCF | Working |
-| Awning Light | 0x15 | Working |
-| Scare Light | 0x86 | Working |
+The fix was a fundamental architectural shift:
+- **Before**: Config stored `counter` values directly. Broke after reboot.
+- **After**: Config stores `func_id` values. Counter resolved dynamically every poll cycle from live `0x08 0x02` registration broadcasts.
+
+This was the single most important discovery for building a reliable integration.
+
+### 5. func_id Discovery
+
+Devices broadcast their permanent `func_id` in `0x08 0x02` registration frames at byte offset 8. By continuously collecting these broadcasts, we build a live `func_id → counter` map that survives reboots.
+
+## Confirmed Working Device Types
+
+All of these are controlled and monitored via the Home Assistant integration:
+
+| Category | func_ids | Protocol | Auth |
+|----------|----------|----------|------|
+| Lights | 32, 33, 41, 48, 49, 50, 57, 58, 59, 63, 122 | Latching relay (0x80) | TEA seed/key |
+| Water Heaters | 3 (Gas), 4 (Electric) | Latching relay (0x80) | TEA seed/key |
+| Water Pump | 5 | Latching relay (0x80) | TEA seed/key |
+| Generator | 95 | Generator (0x81) | TEA seed/key |
+| Tank Sensors | 67, 68, 69, 70, 71, 176 | Read-only broadcast | None |
+| Leveler | 88 (Landing Gear) | Button sim (0x03) | None |
 
 ## Tank Sensors
 
-Levels broadcast on `01 03` frames:
+Levels broadcast on `01 03` frames. Counter values are volatile — use func_id for stable identification:
 
-| Tank | Counter | Frame Example |
+| Tank | func_id | Frame Pattern |
 |------|---------|---------------|
-| Grey | 0x04 | `01 03 04 [level]` |
-| Fresh | 0x3E | `01 03 3E [level]` |
-| Black | 0x86 | `01 03 86 [level]` |
-| LP | 0x10 | `01 03 10 [level]` |
+| Fresh | 67 | `01 03 [counter] [level]` |
+| Grey | 68 | `01 03 [counter] [level]` |
+| Black | 69 | `01 03 [counter] [level]` |
+| LP | 70 | `01 03 [counter] [level]` |
+| Generator Fuel | 71 | `01 03 [counter] [level]` |
 
 ## Battery Voltage
 
-Voltage comes from the **Generator Genie** (counter 0x87) broadcasts:
+Voltage comes from the Generator Genie (func_id 95) broadcasts:
 
 ```
-05 03 87 [state] [volt_hi] [volt_lo] [temp_hi] [temp_lo]
+05 03 [counter] [state] [volt_hi] [volt_lo] [temp_hi] [temp_lo]
 ```
 
 Voltage is 8.8 fixed point: `volt_hi + volt_lo / 256`
 
-**Usage:**
-```python
-from rvc.onecontrol import read_battery_voltage
-
-voltage = await read_battery_voltage()
-if voltage:
-    print(f"Battery: {voltage:.2f}V")
-```
-
 ## Generator Hour Meter
 
-Hours broadcast on `05 03` frames:
+Hours broadcast on `05 03` frames with a dedicated counter (0x80 for the hour meter subtype):
 
 ```
 05 03 80 [uint32 BE seconds] [status]
 ```
 
-Operating seconds ÷ 3600 = hours.
+Operating seconds / 3600 = hours.
+
+## Relay Status Broadcasts (0x06 0x03)
+
+All latching relay devices (lights, water heaters, water pump) continuously broadcast their ON/OFF state:
+
+```
+06 03 [counter] [status_byte] ...
+```
+
+Bit 0 of `status_byte` indicates ON (1) or OFF (0). This provides live status without needing to poll individual devices, and is the primary mechanism for keeping the HA integration in sync with physical state.
 
 ## Generator Control (WORKING! ✅)
 
-The Generator Genie (counter 0x87) uses a **different protocol** than lights!
+Cracked Jan 18, 2026. The Generator Genie (func_id 95) uses a **different protocol** than latching relays.
 
 ### Key Differences from Lights
 
 | Aspect | Lights | Generator |
 |--------|--------|-----------|
-| Protocol | 0x80 | **0x81** |
+| Protocol byte | 0x80 | **0x81** |
+| Connection byte | 0x40 | **0xE8** |
 | Control frame type | 0x00 | **0x01** |
-| Seed device type | 42 00 04 | 42 00 04 |
-| Key device type | 43 00 04 | 43 00 04 |
 | ON value | 0x01 | **0x02** |
 | OFF value | 0x00 | **0x01** |
 
 ### Command Sequence
 
 ```
-1. Seed request:   02 81 [conn] 87 42 00 04
-2. Seed response:  06 82 1d 7a 42 00 04 [seed]  (from controller)
-3. Key transmit:   06 81 [conn] 87 43 00 04 [key]
-4. ON command:     01 81 [conn+2] 87 00 02
-5. OFF command:    01 81 [conn+2] 87 00 01
+1. Seed request:   02 81 E8 [counter] 42 00 04
+2. Seed response:  06 [80|82] ... 42 00 04 [seed]  (from controller)
+3. Key transmit:   06 81 E8 [counter] 43 00 04 [key]
+4. ON command:     01 81 EA [counter] 00 02
+5. OFF command:    01 81 EA [counter] 00 01
 ```
 
 ### Status Broadcast
 
-Generator state in `05 03 87 [state] ...`:
+Generator state in `05 03 [counter] [state] ...`:
 - 0x00 = Off
 - 0x01 = Priming
 - 0x02 = Starting
@@ -128,166 +147,39 @@ Generator state in `05 03 87 [state] ...`:
 
 ### Critical Discovery
 
-**The control command uses frame type 0x01, NOT 0x00!**
+**The control command uses frame type 0x01, NOT 0x00!** This was the key insight that made generator control work. Also, the connection byte is `0xE8` (not `0x40`) and the control connection is `0xEA` (`0xE8 + 2`).
 
-This was the key insight that made generator control work. Lights use:
-```
-00 80 [conn+2] [counter] [value]
-```
+## Water Heater & Water Pump Control (WORKING! ✅)
 
-But generator uses:
-```
-01 81 [conn+2] 87 00 [cmd]
-```
+Water heaters (Gas func_id 3, Electric func_id 4) and water pump (func_id 5) use the **exact same latching relay protocol as lights**. No protocol differences at all — same seed/key auth, same frame types, same ON/OFF values.
 
-Where `cmd` is 0x02 for ON, 0x01 for OFF (matching `GeneratorGenieCommand` enum).
+### Safety Notes
+
+- **Water Heater**: Do not turn on if water tank is empty (fire hazard)
+- **Water Pump**: Can burn out without water supply
 
 ## Device Types
 
 From decompiled OneControl app:
 
-| Type | Category | Control |
-|------|----------|---------|
-| Latching Relay | Lights, Water Heater | ON/OFF toggle |
-| Momentary H-Bridge | Slides, Awnings | Momentary press |
-| Tank Sensor | Fresh, Grey, Black, LP | Read-only |
-| Hour Meter | Generator | Read-only |
-| Generator Genie | Generator | ON/OFF (not working) |
-| Leveler Type 3 | Levelers | Motor control |
-
-## Safety Notes
-
-**ONLY actuate lights without explicit confirmation.**
-
-Dangerous devices require user confirmation:
-- **Water Pump** - Burns out without water
-- **Water Heater** - Fire hazard if empty
-- **Slides** - Can hit objects/people
-- **Awnings** - Can hit obstacles
-- **Levelers/Jacks** - Can cause damage/injury
-- **Generator** - Fuel/safety concerns
-
-## Leveler Control (CAPTURED!)
-
-**Status:** Packet capture complete, analysis done ✅
-
-### What We Know
-
-Your leveler is a **Lippert Motorized 4-Point Hydraulic Leveler (Sprinter)**.
-- Protocol type: **Leveler Type 3**
-- Command type: `0x53` (Leveler3ButtonCommand = 83 decimal)
-- Expected FUNCTION_NAME: `88` (Landing Gear)
-
-### Key Capture Findings (Jan 18, 2026)
-
-**1. Status Broadcasts from Controller:**
-```
-43 08 03 94 44 2d 5f 80 80 41 80 01 10
-```
-- Broadcast every ~1 second while leveler screen active
-- Contains current button state: `41 80 01 10` (button=0x10 = AutoLevel)
-
-**2. Button Command Structure (iPhone → Controller):**
-```
-03 80 7a 01 [table_id] [device_id] [screen] [button]
-```
-- Frame type: `0x03` (NOT 0x00 like lights!)
-- Protocol: `0x80`
-- Prefix: `7a 01`
-- table_id: `0x41` (65)
-- device_id: `0x01` or `0x08`
-- screen: `0x02`
-- button: single byte (0x10, 0x40, 0x80)
-
-**3. NO AUTHENTICATION** required for leveler commands!
-
-### Observed Button Values
-
-| Button | Value | Observed in Capture |
-|--------|-------|---------------------|
-| AutoLevel | 0x10 | ✅ Multiple times |
-| Enter | 0x40 | ✅ Confirmation |
-| Cancel? | 0x80 | ✅ End of sequence |
-| Retract | 0x20 | Not captured |
-
-### Button Codes (from decompiled code)
-
-| Button | Code | Purpose |
-|--------|------|---------|
-| AutoLevel | 0x0010 | Start auto-leveling |
-| Retract | 0x0020 | Retract all jacks |
-| Back | 0x0200 | Cancel operation |
-| Enter | 0x0040 | Confirm |
-| Front | 0x0008 | Manual front jack |
-| Rear | 0x0004 | Manual rear jack |
-| Left | 0x0002 | Manual left jack |
-| Right | 0x0001 | Manual right jack |
-
-### Auto-Level Sequence (captured)
-
-1. **Press AutoLevel** (button=0x10) - activates auto-level
-2. **Press Enter** (button=0x40) - confirms operation
-3. *(Leveler runs)*
-4. **Press Cancel** (button=0x80) - stops operation
-
-### Why 0x80 for Cancel?
-
-The decompiled code shows `Back = 0x0200` (512), but we captured `0x80` (128).
-Possible explanations:
-- Different button for on-screen "Cancel" vs "Back"
-- Screen-specific button mapping
-- 8-bit truncation of some value
-
-### Discovery Note
-
-**The leveler does NOT appear in idle discovery** because:
-1. ACC/Engine power must be ON
-2. Parking brake must be ENGAGED
-3. Controller is physically powered off otherwise (safety interlock)
-
-### Implementation Plan
-
-```python
-async def leveler_auto_level(host: str = DEFAULT_HOST) -> bool:
-    """Start auto-leveling sequence."""
-    # Send frame type 0x03 with button=0x10
-    await send_leveler_button(table=0x41, device=0x01, screen=0x02, button=0x10)
-    await asyncio.sleep(0.5)
-    # Confirm with Enter
-    await send_leveler_button(table=0x41, device=0x08, screen=0x02, button=0x40)
-    return True
-
-async def leveler_cancel(host: str = DEFAULT_HOST) -> bool:
-    """Cancel current leveler operation."""
-    await send_leveler_button(table=0x41, device=0x01, screen=0x02, button=0x80)
-    return True
-
-async def leveler_retract(host: str = DEFAULT_HOST) -> bool:
-    """Retract all jacks."""
-    # May need button=0x20, needs testing
-    await send_leveler_button(table=0x41, device=0x01, screen=0x02, button=0x20)
-    await asyncio.sleep(0.5)
-    await send_leveler_button(table=0x41, device=0x08, screen=0x02, button=0x40)
-    return True
-```
-
-### Key Difference from Lights
-
-- **NO seed/key authentication needed** for leveler commands
-- Uses **button-press simulation**, not ON/OFF states
-- Uses **frame type 0x03** (not 0x00)
-- Requires **confirmation press** (Enter) after most commands
+| Type | Category | Control | Auth |
+|------|----------|---------|------|
+| Latching Relay | Lights, Water Heater, Water Pump | ON/OFF toggle | TEA seed/key |
+| Momentary H-Bridge | Slides, Awnings | Momentary press | TEA seed/key |
+| Tank Sensor | Fresh, Grey, Black, LP | Read-only | None |
+| Generator Genie | Generator | ON/OFF (0x81 protocol) | TEA seed/key |
+| Leveler Type 3 | Hydraulic leveler | Button simulation | None |
 
 ## CRITICAL: Function ID Confusion
 
-**WARNING**: Some function IDs use the same toggle protocol but are NOT lights!
+**WARNING**: Some func_ids use the same toggle protocol but are NOT lights!
 
 ### Dangerous Misidentifications Found
 
 | func_id | Name in Enum | Actual Device | Risk |
 |---------|--------------|---------------|------|
-| 105 | AWNING | Awning MOTOR | ⚠️ Extends/retracts awning |
-| 107 | WATER_TANK_HEATER | Heating pad under tank | ⛔ NOT a light! |
+| 105 | AWNING | Awning MOTOR | Extends/retracts awning |
+| 107 | WATER_TANK_HEATER | Heating pad under tank | NOT a light! |
 
 ### Safe Light func_ids (confirmed)
 
@@ -306,90 +198,115 @@ The OneControl protocol uses the same command structure for:
 The func_id tells you WHAT it is, but the control protocol is identical.
 **Always verify func_id mappings before toggling unknown devices!**
 
-### Awning Control (for future)
+## Leveler Control (Protocol Decoded, Session WIP)
 
-The awning motor (func_id 105) responds to the same toggle protocol:
-- ON (0x01) = Extend
-- OFF (0x00) = Retract
+### What We Know
 
-To extend fully, you may need to send repeated "extend" commands (like holding a button).
+The leveler is a **Lippert Motorized 4-Point Hydraulic Leveler (Sprinter)**.
+- func_id: **88** (Landing Gear)
+- Command type: `0x53` (Leveler3ButtonCommand = 83 decimal)
+- Protocol: Button-press simulation via frame type `0x03`
 
-## Water Heater Control (Gas & Electric)
+### Key Capture Findings (Jan 2026)
 
-**Status:** Implemented ✅ (Jan 2026)
+From analyzing `leveler2.pcap` and `leveler_new.pcap`:
 
-Water heaters (both gas and electric) use the **exact same protocol as lights** - they're simple latching relay devices!
+**1. NO AUTHENTICATION** required for leveler commands.
 
-### Function IDs
-
-| Type | func_id | Name |
-|------|---------|------|
-| Gas | 3 | Gas Water Heater |
-| Electric | 4 | Electric Water Heater |
-
-### Protocol
-
-Water heaters use the standard latching relay control:
-- **Protocol**: 0x80 (same as lights)
-- **ON value**: 0x01
-- **OFF value**: 0x00
-- **Requires authentication**: Yes (seed/key challenge-response)
-
-### Command Sequence
-
-Same as lights:
+**2. Button Command Structure:**
 ```
-1. Register + Identity
-2. Seed request:  02 80 [conn] [counter] 42 00 04
-3. Wait for seed response
-4. Key transmit:  06 80 [conn] [counter] 43 00 04 [key]
-5. Control:       00 80 [conn+2] [counter] [value]
+03 80 [conn_hi+2] [conn_lo] 41 [device] 02 [button]
 ```
+- `conn_lo` = the leveler's current counter (volatile, from func_id 88)
+- `conn_hi` = derived from session context
 
-### Implementation
+**3. Persistent TCP Session Required:**
+Unlike lights (which use fresh connections per command), the leveler requires a single persistent TCP connection for the entire interaction, with keepalives.
 
-Since the protocol is identical to lights, the implementation reuses `_control_light()`:
+**4. 5-Frame Registration Sequence:**
+Before any button commands, the app performs:
+1. `0x01` REGISTER (with `0x01` as last byte, not `0x00`)
+2. `0x08 0x41` IDENTITY (subtype `0x41`, not `0x00`)
+3. `0x08 0x02` DEVICE REGISTRATION
+4. `0x04 0x01` TYPE 04 frame
+5. `0x03 0x03` KEEPALIVE
 
-```python
-async def water_heater_on(self, counter: int) -> bool:
-    return await self._control_light(counter, on=True)
+### Button Codes
 
-async def water_heater_off(self, counter: int) -> bool:
-    return await self._control_light(counter, on=False)
-```
+| Button | Code | Purpose |
+|--------|------|---------|
+| AutoLevel | 0x10 | Start auto-leveling |
+| Retract | 0x20 | Retract all jacks |
+| Enter | 0x40 | Confirm operation |
+| Cancel | 0x80 | Cancel/stop operation |
+| Front | 0x08 | Manual front jack |
+| Rear | 0x04 | Manual rear jack |
+| Left | 0x02 | Manual left jack |
+| Right | 0x01 | Manual right jack |
 
-### Safety Notes
+### Auto-Level Sequence (from captures)
 
-⚠️ **WARNING**: Water heaters have safety considerations!
-- **Do not turn on if water tank is empty** - can damage heating element
-- **Gas heaters** may have pilot light or ignition requirements
-- Always verify water level before enabling
+1. **Press AutoLevel** (button=0x10, device=0x01)
+2. **Press Enter** (button=0x40, device=0x08) — confirms operation
+3. *(Leveler runs, keepalives sent every ~3s)*
+4. **Press Cancel** (button=0x80) — stops if needed
+
+### Three Critical Bugs Found in Initial Implementation
+
+1. **Incorrect Registration**: Was sending a single wrong `0x02` frame instead of the 5-frame sequence.
+2. **Hardcoded Connection Bytes**: `conn_lo` must be the leveler's current counter (volatile), not a fixed value.
+3. **Broken Session Continuity**: Was opening a new TCP connection per button press instead of maintaining a persistent session with keepalives.
+
+### Discovery Note
+
+**The leveler does NOT appear in idle discovery** because:
+1. ACC/Engine power must be ON
+2. Parking brake must be ENGAGED
+3. Controller is physically powered off otherwise (safety interlock)
+
+### Implementation Plan
+
+A persistent session approach that:
+1. Opens one TCP connection
+2. Performs the full 5-frame registration
+3. Sends screen navigation and status poll frames
+4. Sends button commands within the same session
+5. Sends `0x03 0x03` keepalives periodically
+6. Resolves the leveler counter dynamically from func_id 88
+
+## Safety Notes
+
+**ONLY actuate lights without explicit confirmation.**
+
+Dangerous devices require user confirmation:
+- **Water Pump** - Burns out without water
+- **Water Heater** - Fire hazard if empty
+- **Slides** - Can hit objects/people
+- **Awnings** - Can hit obstacles
+- **Levelers/Jacks** - Can cause damage/injury; requires ACC + parking brake
+- **Generator** - Fuel/safety concerns
 
 ## Future Work
 
-- [x] Generator start/stop control ✅
-- [x] Leveler control (button commands) ✅
-- [x] Home Assistant integration ✅
-- [x] Water heater control (Gas & Electric) ✅
-- [x] Device confirmation UI during setup ✅
-- [ ] Water pump control
+- [ ] Leveler HA entities (persistent session management needed)
 - [ ] Dimming support
-- [ ] Leveler HA integration (protocol done, needs entities)
-- [ ] Status polling from broadcasts
 - [ ] "All Lights" master control
+- [ ] Awning extend/retract (protocol known, safety UX needed)
 
 ### Dropped Features
-- ~~Awning extend/retract control~~ - Users operate while watching
-- ~~Slide control~~ - Users operate while watching
+- ~~Slide control~~ - Users operate while watching, too dangerous for remote control
 
 ## Tools Used
 
 - Wireshark/tcpdump for packet capture
-- .NET decompiler for Lippert app analysis
+- Python scripts for SLL2 pcap parsing (controller captures use Linux cooked capture format)
+- .NET decompiler for Lippert IDS app analysis
 - Python for protocol implementation
 
 ## Source Files
 
-- `rvc/onecontrol.py` - Main client implementation
+- `rvc/onecontrol.py` - Main client implementation (`OneControlClient` class)
+- `rvc/protocol.py` - COBS encoding, CRC-8, TEA cipher
+- `rvc/device_names.py` - func_id → device name mapping
 - `tools/auto_discover.py` - Device discovery
 - `captures/*.pcap` - Reference packet captures
