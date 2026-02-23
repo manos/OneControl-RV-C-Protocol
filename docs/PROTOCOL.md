@@ -181,6 +181,7 @@ These broadcasts are sent continuously. Collect them to build a live `func_id â†
 | 88 | Landing Gear | Leveler |
 | 95 | Generator | Generator Genie |
 | 105 | Awning Motor | H-Bridge Motor |
+| 107 | Water Tank Heater | Latching Relay |
 | 122 | Scare Light | Latching Relay |
 
 ## Light / Water Heater / Water Pump Control

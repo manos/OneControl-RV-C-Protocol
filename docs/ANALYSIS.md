@@ -64,7 +64,7 @@ All of these are controlled and monitored via the Home Assistant integration:
 | Category | func_ids | Protocol | Auth |
 |----------|----------|----------|------|
 | Lights | 32, 33, 41, 48, 49, 50, 57, 58, 59, 63, 122 | Latching relay (0x80) | TEA seed/key |
-| Water Heaters | 3 (Gas), 4 (Electric) | Latching relay (0x80) | TEA seed/key |
+| Water Heaters | 3 (Gas), 4 (Electric), 107 (Tank Heater) | Latching relay (0x80) | TEA seed/key |
 | Water Pump | 5 | Latching relay (0x80) | TEA seed/key |
 | Generator | 95 | Generator (0x81) | TEA seed/key |
 | Tank Sensors | 67, 68, 69, 70, 71, 176 | Read-only broadcast | None |
@@ -151,7 +151,7 @@ Generator state in `05 03 [counter] [state] ...`:
 
 ## Water Heater & Water Pump Control (WORKING! ✅)
 
-Water heaters (Gas func_id 3, Electric func_id 4) and water pump (func_id 5) use the **exact same latching relay protocol as lights**. No protocol differences at all — same seed/key auth, same frame types, same ON/OFF values.
+Water heaters (Gas func_id 3, Electric func_id 4, Water Tank Heater func_id 107) and water pump (func_id 5) use the **exact same latching relay protocol as lights**. No protocol differences at all — same seed/key auth, same frame types, same ON/OFF values.
 
 ### Safety Notes
 
@@ -179,7 +179,8 @@ From decompiled OneControl app:
 | func_id | Name in Enum | Actual Device | Risk |
 |---------|--------------|---------------|------|
 | 105 | AWNING | Awning MOTOR | Extends/retracts awning |
-| 107 | WATER_TANK_HEATER | Heating pad under tank | NOT a light! |
+
+**Resolved:** func_id 107 (Water Tank Heater) was initially misidentified as a light risk. It is now properly categorized as a water heater switch.
 
 ### Safe Light func_ids (confirmed)
 
